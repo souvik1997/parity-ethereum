@@ -20,10 +20,8 @@ use std::sync::{Arc, Weak};
 use std::collections::BTreeMap;
 
 use jsonrpc_core::{BoxFuture, Result, Error};
-use jsonrpc_core::futures::{self, Future, IntoFuture};
 use jsonrpc_core::futures::{self, Future, IntoFuture, Stream};
-use jsonrpc_macros::Trailing;
-use jsonrpc_macros::pubsub::{Sink, Subscriber};
+use jsonrpc_pubsub::typed::{Sink, Subscriber};
 use jsonrpc_pubsub::SubscriptionId;
 
 use v1::helpers::{errors, limit_logs, Subscribers, };
