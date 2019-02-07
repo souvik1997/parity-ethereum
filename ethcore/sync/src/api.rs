@@ -27,6 +27,7 @@ use network::{NetworkProtocolHandler, NetworkContext, PeerId, ProtocolId,
 
 use types::pruning_info::PruningInfo;
 use ethereum_types::{H256, H512, U256};
+use futures::sync::mpsc as futures_mpsc;
 use io::{TimerToken};
 use ethkey::Secret;
 use ethcore::client::{BlockChainClient, ChainNotify, NewBlocks, ChainMessageType};
@@ -39,7 +40,7 @@ use std::str::FromStr;
 use parking_lot::{RwLock, Mutex};
 use chain::{ETH_PROTOCOL_VERSION_63, ETH_PROTOCOL_VERSION_62,
 	PAR_PROTOCOL_VERSION_1, PAR_PROTOCOL_VERSION_2, PAR_PROTOCOL_VERSION_3,
-	PRIVATE_TRANSACTION_PACKET, SIGNED_PRIVATE_TRANSACTION_PACKET};
+	PRIVATE_TRANSACTION_PACKET, SIGNED_PRIVATE_TRANSACTION_PACKET, SyncState};
 use light::client::AsLightClient;
 use light::Provider;
 use light::net::{
@@ -128,6 +129,8 @@ impl Default for SyncConfig {
 	}
 }
 
+pub type Notification<T> = futures_mpsc::UnboundedReceiver<T>;
+
 /// Current sync status
 pub trait SyncProvider: Send + Sync {
 	/// Get sync status
@@ -138,6 +141,9 @@ pub trait SyncProvider: Send + Sync {
 
 	/// Get the enode if available.
 	fn enode(&self) -> Option<String>;
+
+	/// gets sync status notifications
+	fn sync_notification(&self) -> Notification<SyncState>;
 
 	/// Returns propagation count for pending transactions.
 	fn transactions_stats(&self) -> BTreeMap<H256, TransactionStats>;
@@ -416,6 +422,10 @@ impl SyncProvider for EthSync {
 
 	fn transactions_stats(&self) -> BTreeMap<H256, TransactionStats> {
 		self.eth_handler.sync.transactions_stats()
+	}
+
+	fn sync_notification(&self) -> Notification<SyncState> {
+		self.eth_handler.sync.write().sync_notifications()
 	}
 }
 

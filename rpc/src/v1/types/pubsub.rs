@@ -30,6 +30,17 @@ pub enum Result {
 	Log(Log),
 	/// Transaction hash
 	TransactionHash(H256),
+	///
+	SyncState(PubSubSyncStatus)
+}
+
+#[derive(Debug, Serialize, Eq, PartialEq, Clone)]
+#[serde(rename_all="camelCase")]
+pub struct PubSubSyncStatus {
+	//	starting_block: U64,
+	pub is_syncing: bool,
+//	current_block: U64,
+//	highest_block: U64
 }
 
 impl Serialize for Result {
@@ -40,6 +51,7 @@ impl Serialize for Result {
 			Result::Header(ref header) => header.serialize(serializer),
 			Result::Log(ref log) => log.serialize(serializer),
 			Result::TransactionHash(ref hash) => hash.serialize(serializer),
+			Result::SyncState(ref sync) => sync.serialize(serializer)
 		}
 	}
 }
