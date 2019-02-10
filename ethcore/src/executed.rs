@@ -67,6 +67,7 @@ pub struct Executed<T = FlatTrace, V = VMTrace> {
 	pub vm_trace: Option<V>,
 	/// The state diff, if we traced it.
 	pub state_diff: Option<StateDiff>,
+	// TODO(souvik) Add variables to represent read/write sets
 }
 
 /// Result of executing the transaction.
