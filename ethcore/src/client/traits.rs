@@ -483,3 +483,9 @@ pub trait ProvingBlockChainClient: BlockChainClient {
 	/// Get an epoch change signal by block hash.
 	fn epoch_signal(&self, hash: H256) -> Option<Vec<u8>>;
 }
+
+/// Provides `prove_call_contract` method
+pub trait ProvingCallContract: CallContract {
+	/// Like `call_contract`, but generates a proof
+	fn prove_call_contract(&self, id: BlockId, address: Address, data: Bytes) -> Result<(Bytes, Vec<DBValue>), String>;
+}

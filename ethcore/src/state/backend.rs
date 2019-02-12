@@ -33,12 +33,7 @@ use kvdb::DBValue;
 use keccak_hasher::KeccakHasher;
 
 /// State backend. See module docs for more details.
-pub trait Backend: Send {
-	/// Treat the backend as a read-only hashdb.
-	fn as_hashdb(&self) -> &HashDB<KeccakHasher, DBValue>;
-
-	/// Treat the backend as a writeable hashdb.
-	fn as_hashdb_mut(&mut self) -> &mut HashDB<KeccakHasher, DBValue>;
+pub trait Backend: Send + AsHashDB<KeccakHasher, DBValue> {
 
 	/// Add an account entry to the cache.
 	fn add_to_account_cache(&mut self, addr: Address, data: Option<Account>, modified: bool);
@@ -115,8 +110,6 @@ impl AsHashDB<KeccakHasher, DBValue> for ProofCheck {
 }
 
 impl Backend for ProofCheck {
-	fn as_hashdb(&self) -> &HashDB<KeccakHasher, DBValue> { self }
-	fn as_hashdb_mut(&mut self) -> &mut HashDB<KeccakHasher, DBValue> { self }
 	fn add_to_account_cache(&mut self, _addr: Address, _data: Option<Account>, _modified: bool) {}
 	fn cache_code(&self, _hash: H256, _code: Arc<Vec<u8>>) {}
 	fn get_cached_account(&self, _addr: &Address) -> Option<Option<Account>> { None }
@@ -184,9 +177,6 @@ impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> HashDB<KeccakHasher, DBVa
 }
 
 impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> Backend for Proving<H> {
-	fn as_hashdb(&self) -> &HashDB<KeccakHasher, DBValue> { self }
-
-	fn as_hashdb_mut(&mut self) -> &mut HashDB<KeccakHasher, DBValue> { self }
 
 	fn add_to_account_cache(&mut self, _: Address, _: Option<Account>, _: bool) { }
 
@@ -237,7 +227,7 @@ impl<H: AsHashDB<KeccakHasher, DBValue> + Clone> Clone for Proving<H> {
 /// it. Doesn't cache anything.
 pub struct Basic<H>(pub H);
 
-impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> Backend for Basic<H> {
+impl<H: AsHashDB<KeccakHasher, DBValue>> AsHashDB<KeccakHasher, DBValue> for Basic<H> {
 	fn as_hashdb(&self) -> &HashDB<KeccakHasher, DBValue> {
 		self.0.as_hashdb()
 	}
@@ -245,7 +235,9 @@ impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> Backend for Basic<H> {
 	fn as_hashdb_mut(&mut self) -> &mut HashDB<KeccakHasher, DBValue> {
 		self.0.as_hashdb_mut()
 	}
+}
 
+impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> Backend for Basic<H> {
 	fn add_to_account_cache(&mut self, _: Address, _: Option<Account>, _: bool) { }
 
 	fn cache_code(&self, _: H256, _: Arc<Vec<u8>>) { }

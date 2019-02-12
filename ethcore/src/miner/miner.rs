@@ -43,7 +43,8 @@ use using_queue::{UsingQueue, GetAction};
 use account_provider::{AccountProvider, SignError as AccountError};
 use block::{ClosedBlock, IsBlock, Block, SealedBlock};
 use client::{
-	BlockChain, ChainInfo, CallContract, BlockProducer, SealedBlockImporter, Nonce, TransactionInfo, TransactionId
+	BlockChain, ChainInfo, CallContract, BlockProducer, SealedBlockImporter, Nonce, TransactionInfo, TransactionId,
+	ProvingCallContract
 };
 use client::{BlockId, ClientIoMessage};
 use executive::contract_address;
@@ -349,7 +350,7 @@ impl Miner {
 	}
 
 	fn pool_client<'a, C: 'a>(&'a self, chain: &'a C) -> PoolClient<'a, C> where
-		C: BlockChain + CallContract,
+		C: BlockChain + CallContract + ProvingCallContract,
 	{
 		PoolClient::new(
 			chain,
@@ -362,7 +363,7 @@ impl Miner {
 
 	/// Prepares new block for sealing including top transactions from queue.
 	fn prepare_block<C>(&self, chain: &C) -> Option<(ClosedBlock, Option<H256>)> where
-		C: BlockChain + CallContract + BlockProducer + Nonce + Sync,
+		C: BlockChain + CallContract + BlockProducer + Nonce + ProvingCallContract + Sync,
 	{
 		trace_time!("prepare_block");
 		let chain_info = chain.chain_info();
@@ -746,7 +747,7 @@ impl Miner {
 
 	/// Prepare a pending block. Returns the preparation status.
 	fn prepare_pending_block<C>(&self, client: &C) -> BlockPreparationStatus where
-		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + Sync,
+		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync,
 	{
 		trace!(target: "miner", "prepare_pending_block: entering");
 		let prepare_new = {
@@ -1075,7 +1076,7 @@ impl miner::MinerService for Miner {
 	/// Update sealing if required.
 	/// Prepare the block and work if the Engine does not seal internally.
 	fn update_sealing<C>(&self, chain: &C) where
-		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + Sync,
+		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync,
 	{
 		trace!(target: "miner", "update_sealing");
 
@@ -1100,7 +1101,7 @@ impl miner::MinerService for Miner {
 		if block.block().header().number() == 1 {
 			if let Some(name) = self.engine.params().nonzero_bugfix_hard_fork() {
 				warn!("Your chain specification contains one or more hard forks which are required to be \
-					   on by default. Please remove these forks and start your chain again: {}.", name);
+						 on by default. Please remove these forks and start your chain again: {}.", name);
 				return;
 			}
 		}
@@ -1129,7 +1130,7 @@ impl miner::MinerService for Miner {
 	}
 
 	fn work_package<C>(&self, chain: &C) -> Option<(H256, BlockNumber, u64, U256)> where
-		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + Sync,
+		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync,
 	{
 		if self.engine.seals_internally().is_some() {
 			return None;

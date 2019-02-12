@@ -40,7 +40,7 @@ use block::{Block, SealedBlock};
 use client::{
 	CallContract, RegistryInfo, ScheduleInfo,
 	BlockChain, BlockProducer, SealedBlockImporter, ChainInfo,
-	AccountData, Nonce,
+	AccountData, Nonce, ProvingCallContract
 };
 use error::Error;
 use header::{BlockNumber, Header};
@@ -55,6 +55,8 @@ pub trait TransactionVerifierClient: Send + Sync
 	+ CallContract + RegistryInfo
 	// Required for verifiying transactions
 	+ BlockChain + ScheduleInfo + AccountData
+	// Required for generating proofs
+	+ ProvingCallContract
 {}
 
 /// Extended client interface used for mining
@@ -78,11 +80,11 @@ pub trait MinerService : Send + Sync {
 	///
 	/// Returns `None` if engine seals internally.
 	fn work_package<C>(&self, chain: &C) -> Option<(H256, BlockNumber, u64, U256)>
-		where C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + Sync;
+		where C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync;
 
 	/// Update current pending block
 	fn update_sealing<C>(&self, chain: &C)
-		where C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + Sync;
+		where C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync;
 
 	// Notifications
 
