@@ -39,7 +39,6 @@ use types::basic_account::BasicAccount;
 use executed::{Executed, ExecutionError};
 use types::state_diff::StateDiff;
 use transaction::SignedTransaction;
-use state_db::StateDB;
 use factory::VmFactory;
 
 use ethereum_types::{H256, U256, Address};
@@ -1234,8 +1233,8 @@ impl<B: Backend> fmt::Debug for State<B> {
 
 // TODO: cloning for `State` shouldn't be possible in general; Remove this and use
 // checkpoints where possible.
-impl Clone for State<StateDB> {
-	fn clone(&self) -> State<StateDB> {
+impl<B: Backend + Clone> Clone for State<B> {
+	fn clone(&self) -> Self {
 		let cache = {
 			let mut cache: HashMap<Address, AccountEntry> = HashMap::new();
 			for (key, val) in self.cache.borrow().iter() {
@@ -1247,7 +1246,7 @@ impl Clone for State<StateDB> {
 		};
 
 		State {
-			db: self.db.boxed_clone(),
+			db: self.db.clone(),
 			root: self.root.clone(),
 			cache: RefCell::new(cache),
 			checkpoints: RefCell::new(Vec::new()),

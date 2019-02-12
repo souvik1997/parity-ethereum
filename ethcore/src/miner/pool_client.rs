@@ -33,7 +33,7 @@ use transaction::{
 use parking_lot::RwLock;
 
 use account_provider::AccountProvider;
-use client::{TransactionId, BlockInfo, CallContract, Nonce};
+use client::{TransactionId, BlockInfo, CallContract, Nonce, ProvingCallContract};
 use engines::EthEngine;
 use header::Header;
 use miner;
@@ -90,7 +90,7 @@ impl<'a, C: 'a> Clone for PoolClient<'a, C> {
 }
 
 impl<'a, C: 'a> PoolClient<'a, C> where
-C: BlockInfo + CallContract,
+C: BlockInfo + CallContract + ProvingCallContract,
 {
 	/// Creates new client given chain, nonce cache, accounts and service transaction verifier.
 	pub fn new(
@@ -122,6 +122,7 @@ C: BlockInfo + CallContract,
 		self.engine.machine().verify_transaction(&tx, &self.best_block_header, self.chain)
 	}
 }
+
 
 impl<'a, C: 'a> fmt::Debug for PoolClient<'a, C> {
 	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
@@ -219,30 +220,30 @@ impl<'a, C: 'a> CachedNonceClient<'a, C> {
 impl<'a, C: 'a> NonceClient for CachedNonceClient<'a, C> where
 	C: Nonce + Sync,
 {
-  fn account_nonce(&self, address: &Address) -> U256 {
-	  if let Some(nonce) = self.cache.nonces.read().get(address) {
-		  return *nonce;
-	  }
+	fn account_nonce(&self, address: &Address) -> U256 {
+		if let Some(nonce) = self.cache.nonces.read().get(address) {
+			return *nonce;
+		}
 
-	  // We don't check again if cache has been populated.
-	  // It's not THAT expensive to fetch the nonce from state.
-	  let mut cache = self.cache.nonces.write();
-	  let nonce = self.client.latest_nonce(address);
-	  cache.insert(*address, nonce);
+		// We don't check again if cache has been populated.
+		// It's not THAT expensive to fetch the nonce from state.
+		let mut cache = self.cache.nonces.write();
+		let nonce = self.client.latest_nonce(address);
+		cache.insert(*address, nonce);
 
-	  if cache.len() < self.cache.limit {
-		  return nonce
-	  }
+		if cache.len() < self.cache.limit {
+			return nonce
+		}
 
-	  debug!(target: "txpool", "NonceCache: reached limit.");
-	  trace_time!("nonce_cache:clear");
+		debug!(target: "txpool", "NonceCache: reached limit.");
+		trace_time!("nonce_cache:clear");
 
-	  // Remove excessive amount of entries from the cache
-	  let to_remove: Vec<_> = cache.keys().take(self.cache.limit / 2).cloned().collect();
-	  for x in to_remove {
+		// Remove excessive amount of entries from the cache
+		let to_remove: Vec<_> = cache.keys().take(self.cache.limit / 2).cloned().collect();
+		for x in to_remove {
 		cache.remove(&x);
-	  }
+		}
 
-	  nonce
-  }
+		nonce
+	}
 }

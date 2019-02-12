@@ -39,7 +39,7 @@ use client::{
 	RegistryInfo, ReopenBlock, PrepareOpenBlock, ScheduleInfo, ImportSealedBlock,
 	BroadcastProposalBlock, ImportBlock, StateOrBlock, StateInfo, StateClient, Call,
 	AccountData, BlockChain as BlockChainTrait, BlockProducer, SealedBlockImporter,
-	ClientIoMessage,
+	ClientIoMessage, ProvingCallContract
 };
 use client::{
 	BlockId, TransactionId, UncleId, TraceId, ClientConfig, BlockChainClient,
@@ -69,7 +69,7 @@ use receipt::{Receipt, LocalizedReceipt};
 use snapshot::{self, io as snapshot_io, SnapshotClient};
 use spec::Spec;
 use state_db::StateDB;
-use state::{self, State};
+use state::{self, State, backend::Backend};
 use trace;
 use trace::{TraceDB, ImportRequest as TraceImportRequest, LocalizedTrace, Database as TraceDatabase};
 use transaction::{self, LocalizedTransaction, UnverifiedTransaction, SignedTransaction, Transaction, Action};
@@ -1241,15 +1241,15 @@ impl Client {
 		}.fake_sign(from)
 	}
 
-	fn do_virtual_call(
+	fn do_virtual_call<B: Backend + Clone>(
 		machine: &::machine::EthereumMachine,
 		env_info: &EnvInfo,
-		state: &mut State<StateDB>,
+		state: &mut State<B>,
 		t: &SignedTransaction,
 		analytics: CallAnalytics,
 	) -> Result<Executed, CallError> {
-		fn call<V, T>(
-			state: &mut State<StateDB>,
+		fn call<V, T, B: Backend + Clone>(
+			state: &mut State<B>,
 			env_info: &EnvInfo,
 			machine: &::machine::EthereumMachine,
 			state_diff: bool,
@@ -2451,6 +2451,42 @@ impl ProvingBlockChainClient for Client {
 		// pending transitions are never deleted, and do not contain
 		// finality proofs by definition.
 		self.chain.read().get_pending_transition(hash).map(|pending| pending.proof)
+	}
+}
+
+impl ProvingCallContract for Client {
+	fn prove_call_contract(&self, block_id: BlockId, address: Address, data: Bytes) -> Result<(Bytes, Vec<DBValue>), String> {
+		let state_pruned = || CallError::StatePruned.to_string();
+
+		// From state_at
+
+		let mut proving_state = self.block_header(block_id).and_then(|header| {
+			let state_db = self.state_db.read().boxed_clone();
+			let backend = ::state::backend::Proving::new(state_db);
+
+			let root = header.state_root();
+			let block_number = self.block_number(block_id)?;
+			State::from_existing(backend, root, self.engine.account_start_nonce(block_number), self.factories.clone()).ok()
+		}).ok_or_else(&state_pruned)?;
+
+		let header = self.block_header_decoded(block_id).ok_or_else(&state_pruned)?;
+
+		let transaction = self.contract_call_tx(block_id, address, data);
+
+		let env_info = EnvInfo {
+			number: header.number(),
+			author: header.author().clone(),
+			timestamp: header.timestamp(),
+			difficulty: header.difficulty().clone(),
+			last_hashes: self.build_last_hashes(header.parent_hash()),
+			gas_used: U256::default(),
+			gas_limit: U256::max_value(),
+		};
+		let machine = self.engine.machine();
+
+		Self::do_virtual_call(&machine, &env_info, &mut proving_state, &transaction, Default::default()).map_err(|e| format!("{:?}", e))
+			.map(|executed| executed.output)
+			.map(|bytes| (bytes, proving_state.drop().1.extract_proof()))
 	}
 }
 

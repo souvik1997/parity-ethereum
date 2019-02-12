@@ -40,7 +40,7 @@ use client::{
 	TransactionId, UncleId, TraceId, TraceFilter, LastHashes, CallAnalytics,
 	ProvingBlockChainClient, ScheduleInfo, ImportSealedBlock, BroadcastProposalBlock, ImportBlock, StateOrBlock,
 	Call, StateClient, EngineInfo, AccountData, BlockChain, BlockProducer, SealedBlockImporter, IoClient,
-	BadBlocks,
+	BadBlocks, ProvingCallContract
 };
 use db::{NUM_COLUMNS, COL_STATE};
 use header::{Header as BlockHeader, BlockNumber};
@@ -507,6 +507,10 @@ impl BlockInfo for TestBlockChainClient {
 
 impl CallContract for TestBlockChainClient {
 	fn call_contract(&self, _id: BlockId, _address: Address, _data: Bytes) -> Result<Bytes, String> { Ok(vec![]) }
+}
+
+impl ProvingCallContract for TestBlockChainClient {
+	fn prove_call_contract(&self, _block_id: BlockId, _address: Address, _data: Bytes) -> Result<(Bytes, Vec<DBValue>), String> { Ok((vec![], vec![])) }
 }
 
 impl TransactionInfo for TestBlockChainClient {
