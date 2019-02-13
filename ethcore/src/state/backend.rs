@@ -211,6 +211,16 @@ impl<H: AsHashDB<KeccakHasher, DBValue>> Proving<H> {
 	pub fn extract_proof(self) -> Vec<DBValue> {
 		self.proof.into_inner().into_iter().collect()
 	}
+
+	/// Write saved values to underlying storage
+	pub fn persist(&mut self) {
+		for (changed_key, _) in self.changed.keys() {
+			self.base.as_hashdb_mut().insert(&self.changed.get(&changed_key).expect("just got key, should not change"));
+		}
+	}
+
+	/// Consume backend and return base object
+	pub fn base(self) -> H { self.base }
 }
 
 impl<H: AsHashDB<KeccakHasher, DBValue> + Clone> Clone for Proving<H> {

@@ -68,7 +68,7 @@ pub struct ApplyOutcome<T, V> {
 	/// The trace for the applied transaction, empty if tracing was not produced.
 	pub trace: Vec<T>,
 	/// The VM trace for the applied transaction, None if tracing was not produced.
-	pub vm_trace: Option<V>
+	pub vm_trace: Option<V>,
 }
 
 /// Result type for the execution ("application") of a transaction.
@@ -1171,6 +1171,9 @@ impl<B: Backend> State<B> {
 	pub fn patch_account(&self, a: &Address, code: Arc<Bytes>, storage: HashMap<H256, H256>) -> TrieResult<()> {
 		Ok(self.require(a, false)?.reset_code_and_storage(code, storage))
 	}
+
+	pub fn account_start_nonce(&self) -> U256 { self.account_start_nonce }
+	pub fn factories(&self) -> Factories { self.factories.clone() }
 }
 
 // State proof implementations; useful for light client protocols.
