@@ -53,7 +53,7 @@ use miner;
 use miner::pool_client::{PoolClient, CachedNonceClient, NonceCache};
 use receipt::RichReceipt;
 use spec::Spec;
-use state::State;
+use state::{State, backend::Proving};
 use ethkey::Password;
 
 /// Different possible definitions for pending transaction set.
@@ -1264,7 +1264,16 @@ impl miner::MinerService for Miner {
 	}
 
 	fn pending_state(&self, latest_block_number: BlockNumber) -> Option<Self::State> {
-		self.map_existing_pending_block(|b| b.state().clone(), latest_block_number)
+		self.map_existing_pending_block(|b| {
+			let cloned = b.state().clone();
+			let root = *cloned.root();
+			let account_start_nonce = cloned.account_start_nonce();
+			let factories = cloned.factories();
+			let mut prove_db = cloned.drop().1;
+			prove_db.persist();
+			let db = prove_db.base();
+			State::from_existing(db, root, account_start_nonce, factories).expect("Should create state")
+		}, latest_block_number)
 	}
 
 	fn pending_block_header(&self, latest_block_number: BlockNumber) -> Option<Header> {

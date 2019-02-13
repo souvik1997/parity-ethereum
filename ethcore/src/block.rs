@@ -45,7 +45,7 @@ use header::{Header, ExtendedHeader};
 use receipt::{Receipt, TransactionOutcome};
 use rlp::{Rlp, RlpStream, Encodable, Decodable, DecoderError, encode_list};
 use state_db::StateDB;
-use state::State;
+use state::{State, backend::Proving};
 use trace::Tracing;
 use transaction::{UnverifiedTransaction, SignedTransaction, Error as TransactionError};
 use triehash::ordered_trie_root;
@@ -105,7 +105,7 @@ pub struct ExecutedBlock {
 	/// Hashes of already executed transactions.
 	pub transactions_set: HashSet<H256>,
 	/// Underlaying state.
-	pub state: State<StateDB>,
+	pub state: State<Proving<StateDB>>,
 	/// Transaction traces.
 	pub traces: Tracing,
 	/// Hashes of last 256 blocks.
@@ -114,7 +114,7 @@ pub struct ExecutedBlock {
 
 impl ExecutedBlock {
 	/// Create a new block from the given `state`.
-	fn new(state: State<StateDB>, last_hashes: Arc<LastHashes>, tracing: bool) -> ExecutedBlock {
+	fn new(state: State<Proving<StateDB>>, last_hashes: Arc<LastHashes>, tracing: bool) -> ExecutedBlock {
 		ExecutedBlock {
 			header: Default::default(),
 			transactions: Default::default(),
@@ -146,7 +146,7 @@ impl ExecutedBlock {
 	}
 
 	/// Get mutable access to a state.
-	pub fn state_mut(&mut self) -> &mut State<StateDB> {
+	pub fn state_mut(&mut self) -> &mut State<Proving<StateDB>> {
 		&mut self.state
 	}
 
@@ -174,7 +174,7 @@ pub trait IsBlock {
 	fn header(&self) -> &Header { &self.block().header }
 
 	/// Get the final state associated with this object's block.
-	fn state(&self) -> &State<StateDB> { &self.block().state }
+	fn state(&self) -> &State<Proving<StateDB>> { &self.block().state }
 
 	/// Get all information on transactions in this block.
 	fn transactions(&self) -> &[SignedTransaction] { &self.block().transactions }
@@ -232,7 +232,7 @@ pub struct OpenBlock<'x> {
 #[derive(Clone)]
 pub struct ClosedBlock {
 	block: ExecutedBlock,
-	unclosed_state: State<StateDB>,
+	unclosed_state: State<Proving<StateDB>>,
 }
 
 /// Just like `ClosedBlock` except that we can't reopen it and it's faster.
@@ -266,6 +266,7 @@ impl<'x> OpenBlock<'x> {
 		ancestry: &mut Iterator<Item=ExtendedHeader>,
 	) -> Result<Self, Error> {
 		let number = parent.number() + 1;
+		let db = Proving::new(db);
 		let state = State::from_existing(db, parent.state_root().clone(), engine.account_start_nonce(number), factories)?;
 		let mut r = OpenBlock {
 			block: ExecutedBlock::new(state, last_hashes, tracing),
@@ -703,7 +704,7 @@ mod tests {
 	) -> Result<SealedBlock, Error> {
 		let header = Unverified::from_rlp(block_bytes.clone())?.header;
 		Ok(enact_bytes(block_bytes, engine, tracing, db, parent, last_hashes, factories)?
-		   .seal(engine, header.seal().to_vec())?)
+			 .seal(engine, header.seal().to_vec())?)
 	}
 
 	#[test]
@@ -730,14 +731,14 @@ mod tests {
 		let b = OpenBlock::new(engine, Default::default(), false, db, &genesis_header, last_hashes.clone(), Address::zero(), (3141562.into(), 31415620.into()), vec![], false, &mut Vec::new().into_iter()).unwrap()
 			.close_and_lock().unwrap().seal(engine, vec![]).unwrap();
 		let orig_bytes = b.rlp_bytes();
-		let orig_db = b.drain().state.drop().1;
+		let orig_db = { let mut d = b.drain().state.drop().1; d.persist(); d.base() };
 
 		let db = spec.ensure_db_good(get_temp_state_db(), &Default::default()).unwrap();
 		let e = enact_and_seal(orig_bytes.clone(), engine, false, db, &genesis_header, last_hashes, Default::default()).unwrap();
 
 		assert_eq!(e.rlp_bytes(), orig_bytes);
 
-		let db = e.drain().state.drop().1;
+		let db = { let mut d = e.drain().state.drop().1; d.persist(); d.base() };
 		assert_eq!(orig_db.journal_db().keys(), db.journal_db().keys());
 		assert!(orig_db.journal_db().keys().iter().filter(|k| orig_db.journal_db().get(k.0) != db.journal_db().get(k.0)).next() == None);
 	}
@@ -761,7 +762,7 @@ mod tests {
 		let b = open_block.close_and_lock().unwrap().seal(engine, vec![]).unwrap();
 
 		let orig_bytes = b.rlp_bytes();
-		let orig_db = b.drain().state.drop().1;
+		let orig_db = { let mut d = b.drain().state.drop().1; d.persist(); d.base() };
 
 		let db = spec.ensure_db_good(get_temp_state_db(), &Default::default()).unwrap();
 		let e = enact_and_seal(orig_bytes.clone(), engine, false, db, &genesis_header, last_hashes, Default::default()).unwrap();
@@ -771,7 +772,7 @@ mod tests {
 		let uncles = view!(BlockView, &bytes).uncles();
 		assert_eq!(uncles[1].extra_data(), b"uncle2");
 
-		let db = e.drain().state.drop().1;
+		let db = { let mut d = e.drain().state.drop().1; d.persist(); d.base() };
 		assert_eq!(orig_db.journal_db().keys(), db.journal_db().keys());
 		assert!(orig_db.journal_db().keys().iter().filter(|k| orig_db.journal_db().get(k.0) != db.journal_db().get(k.0)).next() == None);
 	}

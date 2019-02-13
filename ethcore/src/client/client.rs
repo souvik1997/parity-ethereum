@@ -522,7 +522,9 @@ impl Importer {
 		// CHECK! I *think* this is fine, even if the state_root is equal to another
 		// already-imported block of the same number.
 		// TODO: Prove it with a test.
-		let mut state = block.state.drop().1;
+		let mut prove_state = block.state.drop().1;
+		prove_state.persist();
+		let mut state = prove_state.base();
 
 		// check epoch end signal, potentially generating a proof on the current
 		// state.
