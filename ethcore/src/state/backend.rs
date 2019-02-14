@@ -212,6 +212,11 @@ impl<H: AsHashDB<KeccakHasher, DBValue>> Proving<H> {
 		self.proof.into_inner().into_iter().collect()
 	}
 
+	/// Like extract_proof, but does not consume `self`
+	pub fn copy_proof(&self) -> Vec<DBValue> {
+		self.proof.lock().iter().map(|v| v.clone()).collect()
+	}
+
 	/// Write saved values to underlying storage
 	pub fn persist(&mut self) {
 		for (changed_key, _) in self.changed.keys() {
