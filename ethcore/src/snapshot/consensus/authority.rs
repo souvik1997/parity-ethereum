@@ -116,7 +116,8 @@ impl SnapshotComponents for PoaSnapshot {
 				.append_list(&block.transactions)
 				.append_list(&block.uncles)
 				.append(&receipts)
-				.append(&parent_td);
+				.append(&parent_td)
+				.append(&block.proof);
 			stream.out()
 		});
 
@@ -326,6 +327,7 @@ impl Rebuilder for ChunkRebuilder {
 				header: last_rlp.val_at(0)?,
 				transactions: last_rlp.list_at(1)?,
 				uncles: last_rlp.list_at(2)?,
+				proof: last_rlp.val_at(5)?
 			};
 			let block_data = block.rlp_bytes();
 			let receipts: Vec<Receipt> = last_rlp.list_at(3)?;

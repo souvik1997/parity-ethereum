@@ -45,7 +45,7 @@ use header::{Header, ExtendedHeader};
 use receipt::{Receipt, TransactionOutcome};
 use rlp::{Rlp, RlpStream, Encodable, Decodable, DecoderError, encode_list};
 use state_db::StateDB;
-use state::{State, backend::Proving};
+use state::{State, backend::Proving, backend::Proof};
 use trace::Tracing;
 use transaction::{UnverifiedTransaction, SignedTransaction, Error as TransactionError};
 use triehash::ordered_trie_root;
@@ -62,15 +62,18 @@ pub struct Block {
 	pub transactions: Vec<UnverifiedTransaction>,
 	/// The uncles of this block.
 	pub uncles: Vec<Header>,
+	/// Proof of transactions
+	pub proof: Proof,
 }
 
 impl Block {
 	/// Get the RLP-encoding of the block with the seal.
 	pub fn rlp_bytes(&self) -> Bytes {
-		let mut block_rlp = RlpStream::new_list(3);
+		let mut block_rlp = RlpStream::new_list(4);
 		block_rlp.append(&self.header);
 		block_rlp.append_list(&self.transactions);
 		block_rlp.append_list(&self.uncles);
+		block_rlp.append(&self.proof);
 		block_rlp.out()
 	}
 }
@@ -83,10 +86,12 @@ impl Decodable for Block {
 		if rlp.item_count()? != 3 {
 			return Err(DecoderError::RlpIncorrectListLen);
 		}
+
 		Ok(Block {
 			header: rlp.val_at(0)?,
 			transactions: rlp.list_at(1)?,
 			uncles: rlp.list_at(2)?,
+			proof: rlp.val_at(3)?,
 		})
 	}
 }
@@ -167,6 +172,7 @@ pub trait IsBlock {
 			header: self.header().clone(),
 			transactions: self.transactions().iter().cloned().map(Into::into).collect(),
 			uncles: self.uncles().to_vec(),
+			proof: self.proof()
 		}
 	}
 
@@ -184,6 +190,8 @@ pub trait IsBlock {
 
 	/// Get all uncles in this block.
 	fn uncles(&self) -> &[Header] { &self.block().uncles }
+
+	fn proof(&self) -> Proof { self.state().clone().drop().1.extract_proof() }
 }
 
 /// Trait for an object that owns an `ExecutedBlock`
@@ -532,10 +540,11 @@ impl Drain for LockedBlock {
 impl SealedBlock {
 	/// Get the RLP-encoding of the block.
 	pub fn rlp_bytes(&self) -> Bytes {
-		let mut block_rlp = RlpStream::new_list(3);
+		let mut block_rlp = RlpStream::new_list(4);
 		block_rlp.append(&self.block.header);
 		block_rlp.append_list(&self.block.transactions);
 		block_rlp.append_list(&self.block.uncles);
+		block_rlp.append(&self.block.proof());
 		block_rlp.out()
 	}
 }

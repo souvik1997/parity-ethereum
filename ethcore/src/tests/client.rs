@@ -119,7 +119,7 @@ fn query_none_block() {
 		Arc::new(Miner::new_for_tests(&spec, None)),
 		IoChannel::disconnected(),
 	).unwrap();
-    let non_existant = client.block_header(BlockId::Number(188));
+		let non_existant = client.block_header(BlockId::Number(188));
 	assert!(non_existant.is_none());
 }
 
@@ -175,7 +175,7 @@ fn returns_block_body() {
 	let block = view!(BlockView, &dummy_block);
 	let body = client.block_body(BlockId::Hash(block.header().hash())).unwrap();
 	let body = body.rlp();
-	assert_eq!(body.item_count().unwrap(), 2);
+	assert_eq!(body.item_count().unwrap(), 3);
 	assert_eq!(body.at(0).unwrap().as_raw()[..], block.rlp().at(1).as_raw()[..]);
 	assert_eq!(body.at(1).unwrap().as_raw()[..], block.rlp().at(2).as_raw()[..]);
 }

@@ -31,6 +31,111 @@ use memorydb::MemoryDB;
 use hashdb::{AsHashDB, HashDB};
 use kvdb::DBValue;
 use keccak_hasher::KeccakHasher;
+use rlp::{self, RlpStream, Rlp, DecoderError};
+
+#[derive(Default, Clone, Debug, PartialEq)]
+pub struct ProofElement {
+	pub element: DBValue
+}
+
+impl From<ProofElement> for DBValue {
+	fn from(p: ProofElement) -> DBValue { p.element }
+}
+
+impl ProofElement {
+	pub fn new(v: DBValue) -> Self { Self { element: v } }
+}
+
+#[derive(Default, Clone, Debug, PartialEq, RlpEncodableWrapper, RlpDecodableWrapper)]
+pub struct Proof {
+	pub values: Vec<ProofElement>
+}
+
+impl From<Proof> for Vec<ProofElement> {
+	fn from(p: Proof) -> Vec<ProofElement> { p.values }
+}
+
+impl From<Proof> for Vec<DBValue> {
+	fn from(p: Proof) -> Vec<DBValue> { p.values.into_iter().map(|v| v.into()).collect() }
+}
+
+impl Proof {
+	pub fn new(values: Vec<ProofElement>) -> Self {
+		Self {
+			values: values
+		}
+	}
+}
+
+
+impl rlp::Decodable for ProofElement {
+	fn decode(d: &Rlp) -> Result<Self, DecoderError> {
+		println!("decoding ProofElement: size: {:?}, items: {:?}", d.size(), d.item_count());
+		Ok(ProofElement::new(DBValue::from_vec(d.as_list()?)))
+	}
+}
+
+
+
+impl rlp::Encodable for ProofElement {
+	fn rlp_append(&self, s: &mut RlpStream) {
+		let raw: &[u8] = &self.element;
+		s.append_list(raw);
+	}
+}
+
+#[cfg(test)]
+mod test {
+
+	use rlp::encode;
+	use rlp::decode;
+	use state::backend::{Proof, ProofElement};
+	use rlp::Rlp;
+	use kvdb::DBValue;
+
+	#[derive(RlpEncodable, RlpDecodable)]
+	struct FakeBlock {
+		pub data: Vec<u8>,
+		pub data2: Vec<u8>,
+		pub data3: String,
+		pub proof: Proof
+	}
+
+	#[test]
+	fn serialize_proof_rlp() {
+		let rlp_bytes = encode(&Proof::default());
+		assert!(rlp_bytes.len() > 0);
+		let rlp = Rlp::new(&rlp_bytes);
+		println!("rlp item count: {:?}", rlp.item_count());
+		println!("rlp size: {:?}", rlp.size());
+		let decoded: Proof = rlp.as_val().expect("decode should work");
+		assert!(decoded.values.len() == 0);
+	}
+
+	#[test]
+	fn fakeblock_serialize_rlp() {
+		let proof_data = DBValue::from_slice(&[34, 45]);
+		let fb = FakeBlock {
+			data: vec![1,2,3,4,5,6,7,8,9,10],
+			data2: vec![1,3,4],
+			data3: "Hello World!".to_owned(),
+			proof: { let mut p = Proof::default(); p.values.push(ProofElement::new(DBValue::from_slice(&proof_data))); p }
+		};
+
+		let rlp_bytes = encode(&fb);
+		assert!(rlp_bytes.len() > 0);
+		let rlp = Rlp::new(&rlp_bytes);
+		println!("rlp item count: {:?}", rlp.item_count());
+		println!("rlp size: {:?}", rlp.size());
+		let decoded: FakeBlock = rlp.as_val().expect("decode should work");
+		assert!(decoded.data[0] == 1);
+		assert!(decoded.data[1] == 2);
+		assert!(decoded.data[2] == 3);
+		assert!(decoded.proof.values.len() == 1);
+		assert!(decoded.proof.values[0].element[0] == 34);
+		assert!(decoded.proof.values[0].element[1] == 45);
+	}
+}
 
 /// State backend. See module docs for more details.
 pub trait Backend: Send + AsHashDB<KeccakHasher, DBValue> {
@@ -208,13 +313,13 @@ impl<H: AsHashDB<KeccakHasher, DBValue>> Proving<H> {
 
 	/// Consume the backend, extracting the gathered proof in lexicographical order
 	/// by value.
-	pub fn extract_proof(self) -> Vec<DBValue> {
-		self.proof.into_inner().into_iter().collect()
+	pub fn extract_proof(self) -> Proof {
+		Proof::new(self.proof.into_inner().into_iter().map(|v| ProofElement::new(v)).collect())
 	}
 
 	/// Like extract_proof, but does not consume `self`
-	pub fn copy_proof(&self) -> Vec<DBValue> {
-		self.proof.lock().iter().map(|v| v.clone()).collect()
+	pub fn copy_proof(&self) -> Proof {
+		Proof::new(self.proof.lock().iter().map(|v| ProofElement::new(v.clone())).collect())
 	}
 
 	/// Write saved values to underlying storage

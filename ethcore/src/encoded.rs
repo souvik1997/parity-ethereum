@@ -29,6 +29,7 @@ use hash::keccak;
 use header::{BlockNumber, Header as FullHeader};
 use heapsize::HeapSizeOf;
 use rlp::{self, Rlp, RlpStream};
+use state::backend::Proof;
 use transaction::UnverifiedTransaction;
 use views::{self, BlockView, HeaderView, BodyView};
 
@@ -174,6 +175,10 @@ impl Body {
 
 	/// Hash of each uncle.
 	pub fn uncle_hashes(&self) -> Vec<H256> { self.view().uncle_hashes() }
+
+	pub fn proof_rlp(&self) -> Rlp { self.view().proof_rlp().rlp }
+
+	pub fn proof(&self) -> Proof { self.view().proof() }
 }
 
 /// Owning block view.
@@ -194,6 +199,8 @@ impl Block {
 		stream.append_raw(header.rlp().as_raw(), 1);
 		stream.append_raw(body.transactions_rlp().as_raw(), 1);
 		stream.append_raw(body.uncles_rlp().as_raw(), 1);
+		stream.append_raw(body.proof_rlp().as_raw(), 1);
+
 		Block::new(stream.out())
 	}
 

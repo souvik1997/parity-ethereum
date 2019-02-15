@@ -23,6 +23,7 @@ use header::Header;
 use rlp::encode;
 use transaction::SignedTransaction;
 use views::BlockView;
+use state::backend::Proof;
 use encoded;
 
 /// Helper structure, used for encoding blocks.
@@ -30,7 +31,8 @@ use encoded;
 pub struct Block {
 	pub header: Header,
 	pub transactions: Vec<SignedTransaction>,
-	pub uncles: Vec<Header>
+	pub uncles: Vec<Header>,
+	pub proof: Proof
 }
 
 impl Block {

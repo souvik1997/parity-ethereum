@@ -35,7 +35,7 @@ use trace::LocalizedTrace;
 use transaction::{self, LocalizedTransaction, SignedTransaction};
 use verification::queue::QueueInfo as BlockQueueInfo;
 use verification::queue::kind::blocks::Unverified;
-use state::StateInfo;
+use state::{StateInfo, backend::Proof};
 use header::Header;
 use engines::EthEngine;
 
@@ -487,5 +487,5 @@ pub trait ProvingBlockChainClient: BlockChainClient {
 /// Provides `prove_call_contract` method
 pub trait ProvingCallContract: CallContract {
 	/// Like `call_contract`, but generates a proof
-	fn prove_call_contract(&self, id: BlockId, address: Address, data: Bytes) -> Result<(Bytes, Vec<DBValue>), String>;
+	fn prove_call_contract(&self, id: BlockId, address: Address, data: Bytes) -> Result<(Bytes, Proof), String>;
 }

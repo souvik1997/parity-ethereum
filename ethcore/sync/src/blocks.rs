@@ -24,6 +24,7 @@ use rlp::{Rlp, RlpStream, DecoderError};
 use network;
 use ethcore::header::Header as BlockHeader;
 use ethcore::verification::queue::kind::blocks::Unverified;
+use ethcore::state::backend::Proof;
 use transaction::UnverifiedTransaction;
 
 known_heap_size!(0, HeaderId);
@@ -57,6 +58,8 @@ pub struct SyncBody {
 	pub transactions: Vec<UnverifiedTransaction>,
 	pub uncles_bytes: Bytes,
 	pub uncles: Vec<BlockHeader>,
+	pub proof_bytes: Bytes,
+	pub proof: Proof,
 }
 
 impl SyncBody {
@@ -64,12 +67,15 @@ impl SyncBody {
 		let rlp = Rlp::new(bytes);
 		let transactions_rlp = rlp.at(0)?;
 		let uncles_rlp = rlp.at(1)?;
+		let proof_rlp = rlp.at(2)?;
 
 		let result = SyncBody {
 			transactions_bytes: transactions_rlp.as_raw().to_vec(),
 			transactions: transactions_rlp.as_list()?,
 			uncles_bytes: uncles_rlp.as_raw().to_vec(),
 			uncles: uncles_rlp.as_list()?,
+			proof_bytes: proof_rlp.as_raw().to_vec(),
+			proof: proof_rlp.as_val()?,
 		};
 
 		Ok(result)
@@ -81,6 +87,8 @@ impl SyncBody {
 			transactions: Vec::with_capacity(0),
 			uncles_bytes: ::rlp::EMPTY_LIST_RLP.to_vec(),
 			uncles: Vec::with_capacity(0),
+			proof_bytes: ::rlp::EMPTY_LIST_RLP.to_vec(),
+			proof: Proof::default(),
 		}
 	}
 }
@@ -114,11 +122,13 @@ fn unverified_from_sync(header: SyncHeader, body: Option<SyncBody>) -> Unverifie
 	let body = body.unwrap_or_else(SyncBody::empty_body);
 	stream.append_raw(&body.transactions_bytes, 1);
 	stream.append_raw(&body.uncles_bytes, 1);
+	stream.append_raw(&body.proof_bytes, 1);
 
 	Unverified {
 		header: header.header,
 		transactions: body.transactions,
 		uncles: body.uncles,
+		proof: body.proof,
 		bytes: stream.out().to_vec(),
 	}
 }

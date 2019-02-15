@@ -254,9 +254,9 @@ pub fn prove_transaction_virtual<H: AsHashDB<KeccakHasher, DBValue> + Send + Syn
 		Err(ExecutionError::Internal(_)) => None,
 		Err(e) => {
 			trace!(target: "state", "Proved call failed: {}", e);
-			Some((Vec::new(), state.drop().1.extract_proof()))
+			Some((Vec::new(), state.drop().1.extract_proof().into()))
 		}
-		Ok(res) => Some((res.output, state.drop().1.extract_proof())),
+		Ok(res) => Some((res.output, state.drop().1.extract_proof().into())),
 	}
 }
 
