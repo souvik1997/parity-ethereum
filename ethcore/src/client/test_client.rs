@@ -64,7 +64,7 @@ use header::Header;
 use encoded;
 use engines::EthEngine;
 use ethtrie;
-use state::StateInfo;
+use state::{StateInfo, backend::Proof};
 use views::BlockView;
 
 /// Test client.
@@ -295,6 +295,7 @@ impl TestBlockChainClient {
 		rlp.append(&header);
 		rlp.append_raw(&txs, 1);
 		rlp.append_raw(uncles.as_raw(), 1);
+		rlp.append_raw(&::rlp::EMPTY_LIST_RLP, 1);
 		let unverified = Unverified::from_rlp(rlp.out()).unwrap();
 		self.import_block(unverified).unwrap();
 	}
@@ -510,7 +511,7 @@ impl CallContract for TestBlockChainClient {
 }
 
 impl ProvingCallContract for TestBlockChainClient {
-	fn prove_call_contract(&self, _block_id: BlockId, _address: Address, _data: Bytes) -> Result<(Bytes, Vec<DBValue>), String> { Ok((vec![], vec![])) }
+	fn prove_call_contract(&self, _block_id: BlockId, _address: Address, _data: Bytes) -> Result<(Bytes, Proof), String> { Ok((vec![], Proof::default())) }
 }
 
 impl TransactionInfo for TestBlockChainClient {
@@ -626,6 +627,7 @@ impl BadBlocks for TestBlockChainClient {
 				header: Default::default(),
 				transactions: vec![],
 				uncles: vec![],
+				proof: Proof::default(),
 				bytes: vec![1, 2, 3],
 			}, "Invalid block".into())
 		]

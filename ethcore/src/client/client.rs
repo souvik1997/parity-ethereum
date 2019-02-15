@@ -69,7 +69,7 @@ use receipt::{Receipt, LocalizedReceipt};
 use snapshot::{self, io as snapshot_io, SnapshotClient};
 use spec::Spec;
 use state_db::StateDB;
-use state::{self, State, backend::Backend};
+use state::{self, State, backend::Backend, backend::Proof, backend::ProofElement};
 use trace;
 use trace::{TraceDB, ImportRequest as TraceImportRequest, LocalizedTrace, Database as TraceDatabase};
 use transaction::{self, LocalizedTransaction, UnverifiedTransaction, SignedTransaction, Transaction, Action};
@@ -641,17 +641,27 @@ impl Importer {
 							let res = Executive::new(&mut state, &env_info, &machine, &schedule)
 								.transact(&transaction, options);
 
-							let res = match res {
+							match res {
 								Err(ExecutionError::Internal(e)) =>
 									Err(format!("Internal error: {}", e)),
 								Err(e) => {
 									trace!(target: "client", "Proved call failed: {}", e);
-									Ok((Vec::new(), state.drop().1.extract_proof()))
+									let proof_vec: Vec<ProofElement> = state.drop().1.extract_proof().into();
+									let proof_data: Vec<Vec<u8>> = proof_vec.into_iter().map(|x| {
+										let value: DBValue = x.into();
+										value.into_vec()
+									}).collect();
+									Ok((Vec::new(), proof_data))
 								}
-								Ok(res) => Ok((res.output, state.drop().1.extract_proof())),
-							};
-
-							res.map(|(output, proof)| (output, proof.into_iter().map(|x| x.into_vec()).collect()))
+								Ok(res) => {
+									let proof_vec: Vec<ProofElement> = state.drop().1.extract_proof().into();
+									let proof_data: Vec<Vec<u8>> = proof_vec.into_iter().map(|x| {
+										let value: DBValue = x.into();
+										value.into_vec()
+									}).collect();
+									Ok((res.output, proof_data))
+								},
+							}
 						};
 
 						match with_state.generate_proof(&call) {
@@ -2457,7 +2467,7 @@ impl ProvingBlockChainClient for Client {
 }
 
 impl ProvingCallContract for Client {
-	fn prove_call_contract(&self, block_id: BlockId, address: Address, data: Bytes) -> Result<(Bytes, Vec<DBValue>), String> {
+	fn prove_call_contract(&self, block_id: BlockId, address: Address, data: Bytes) -> Result<(Bytes, Proof), String> {
 		let state_pruned = || CallError::StatePruned.to_string();
 
 		// From state_at

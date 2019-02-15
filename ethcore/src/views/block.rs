@@ -22,6 +22,7 @@ use hash::keccak;
 use header::Header;
 use transaction::{UnverifiedTransaction, LocalizedTransaction};
 use views::{TransactionView, HeaderView};
+use state::backend::Proof;
 use super::ViewRlp;
 
 /// View onto block rlp.
@@ -171,6 +172,14 @@ impl<'a> BlockView<'a> {
 	/// Return nth uncle rlp.
 	pub fn uncle_rlp_at(&self, index: usize) -> Option<Bytes> {
 		self.uncles_rlp().iter().nth(index).map(|rlp| rlp.as_raw().to_vec())
+	}
+
+	pub fn proof_rlp(&self) -> ViewRlp<'a> {
+		self.rlp.at(3)
+	}
+
+	pub fn proof(&self) -> Proof {
+		self.rlp.val_at(3)
 	}
 }
 
