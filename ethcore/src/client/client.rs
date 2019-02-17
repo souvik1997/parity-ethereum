@@ -146,29 +146,6 @@ impl SleepState {
 	}
 }
 
-struct Importer {
-	/// Lock used during block import
-	pub import_lock: Mutex<()>, // FIXME Maybe wrap the whole `Importer` instead?
-
-	/// Used to verify blocks
-	pub verifier: Box<Verifier<Client>>,
-
-	/// Queue containing pending blocks
-	pub block_queue: BlockQueue,
-
-	/// Handles block sealing
-	pub miner: Arc<Miner>,
-
-	/// Ancient block verifier: import an ancient sequence of blocks in order from a starting epoch
-	pub ancient_verifier: AncientVerifier,
-
-	/// Ethereum engine to be used during import
-	pub engine: Arc<EthEngine>,
-
-	/// A lru cache of recently detected bad blocks
-	pub bad_blocks: bad_blocks::BadBlocks,
-}
-
 /// Blockchain database client backed by a persistent database. Owns and manages a blockchain and a block queue.
 /// Call `import_block()` to import a block asynchronously; `flush_queue()` flushes the queue.
 pub struct Client {
@@ -237,482 +214,23 @@ pub struct Client {
 	/// A closure to call when we want to restart the client
 	exit_handler: Mutex<Option<Box<Fn(String) + 'static + Send>>>,
 
-	importer: Importer,
-}
+	/// Lock used during block import
+	import_lock: Mutex<()>, // FIXME Maybe wrap the whole `Importer` instead?
 
-impl Importer {
-	pub fn new(
-		config: &ClientConfig,
-		engine: Arc<EthEngine>,
-		message_channel: IoChannel<ClientIoMessage>,
-		miner: Arc<Miner>,
-	) -> Result<Importer, ::error::Error> {
-		let block_queue = BlockQueue::new(config.queue.clone(), engine.clone(), message_channel.clone(), config.verifier_type.verifying_seal());
+	/// Used to verify blocks
+	verifier: Box<Verifier<Client>>,
 
-		Ok(Importer {
-			import_lock: Mutex::new(()),
-			verifier: verification::new(config.verifier_type.clone()),
-			block_queue,
-			miner,
-			ancient_verifier: AncientVerifier::new(engine.clone()),
-			engine,
-			bad_blocks: Default::default(),
-		})
-	}
+	/// Queue containing pending blocks
+	block_queue: BlockQueue,
 
-	/// This is triggered by a message coming from a block queue when the block is ready for insertion
-	pub fn import_verified_blocks(&self, client: &Client) -> usize {
-		// Shortcut out if we know we're incapable of syncing the chain.
-		if !client.enabled.load(AtomicOrdering::Relaxed) {
-			return 0;
-		}
+	/// Ancient block verifier: import an ancient sequence of blocks in order from a starting epoch
+	ancient_verifier: AncientVerifier,
 
-		let max_blocks_to_import = client.config.max_round_blocks_to_import;
-		let (imported_blocks, import_results, invalid_blocks, imported, proposed_blocks, duration, has_more_blocks_to_import) = {
-			let mut imported_blocks = Vec::with_capacity(max_blocks_to_import);
-			let mut invalid_blocks = HashSet::new();
-			let mut proposed_blocks = Vec::with_capacity(max_blocks_to_import);
-			let mut import_results = Vec::with_capacity(max_blocks_to_import);
+	/// A lru cache of recently detected bad blocks
+	bad_blocks: bad_blocks::BadBlocks,
 
-			let _import_lock = self.import_lock.lock();
-			let blocks = self.block_queue.drain(max_blocks_to_import);
-			if blocks.is_empty() {
-				return 0;
-			}
-			trace_time!("import_verified_blocks");
-			let start = Instant::now();
-
-			for block in blocks {
-				let header = block.header.clone();
-				let bytes = block.bytes.clone();
-				let hash = header.hash();
-
-				let is_invalid = invalid_blocks.contains(header.parent_hash());
-				if is_invalid {
-					invalid_blocks.insert(hash);
-					continue;
-				}
-
-				match self.check_and_lock_block(block, client) {
-					Ok(closed_block) => {
-						if self.engine.is_proposal(&header) {
-							self.block_queue.mark_as_good(&[hash]);
-							proposed_blocks.push(bytes);
-						} else {
-							imported_blocks.push(hash);
-
-							let transactions_len = closed_block.transactions().len();
-
-							let route = self.commit_block(closed_block, &header, encoded::Block::new(bytes), client);
-							import_results.push(route);
-
-							client.report.write().accrue_block(&header, transactions_len);
-						}
-					},
-					Err(err) => {
-						self.bad_blocks.report(bytes, format!("{:?}", err));
-						invalid_blocks.insert(hash);
-					},
-				}
-			}
-
-			let imported = imported_blocks.len();
-			let invalid_blocks = invalid_blocks.into_iter().collect::<Vec<H256>>();
-
-			if !invalid_blocks.is_empty() {
-				self.block_queue.mark_as_bad(&invalid_blocks);
-			}
-			let has_more_blocks_to_import = !self.block_queue.mark_as_good(&imported_blocks);
-			(imported_blocks, import_results, invalid_blocks, imported, proposed_blocks, start.elapsed(), has_more_blocks_to_import)
-		};
-
-		{
-			if !imported_blocks.is_empty() {
-				let route = ChainRoute::from(import_results.as_ref());
-
-				if !has_more_blocks_to_import {
-					self.miner.chain_new_blocks(client, &imported_blocks, &invalid_blocks, route.enacted(), route.retracted(), false);
-				}
-
-				client.notify(|notify| {
-					notify.new_blocks(
-						NewBlocks::new(
-						imported_blocks.clone(),
-						invalid_blocks.clone(),
-						route.clone(),
-						Vec::new(),
-						proposed_blocks.clone(),
-						duration,
-							has_more_blocks_to_import,
-						)
-					);
-				});
-			}
-		}
-
-		let db = client.db.read();
-		db.key_value().flush().expect("DB flush failed.");
-		imported
-	}
-
-	fn check_and_lock_block(&self, block: PreverifiedBlock, client: &Client) -> EthcoreResult<LockedBlock> {
-		let engine = &*self.engine;
-		let header = block.header.clone();
-
-		// Check the block isn't so old we won't be able to enact it.
-		let best_block_number = client.chain.read().best_block_number();
-		if client.pruning_info().earliest_state > header.number() {
-			warn!(target: "client", "Block import failed for #{} ({})\nBlock is ancient (current best block: #{}).", header.number(), header.hash(), best_block_number);
-			bail!("Block is ancient");
-		}
-
-		// Check if parent is in chain
-		let parent = match client.block_header_decoded(BlockId::Hash(*header.parent_hash())) {
-			Some(h) => h,
-			None => {
-				warn!(target: "client", "Block import failed for #{} ({}): Parent not found ({}) ", header.number(), header.hash(), header.parent_hash());
-				bail!("Parent not found");
-			}
-		};
-
-		let chain = client.chain.read();
-		// Verify Block Family
-		let verify_family_result = self.verifier.verify_block_family(
-			&header,
-			&parent,
-			engine,
-			Some(verification::FullFamilyParams {
-				block: &block,
-				block_provider: &**chain,
-				client
-			}),
-		);
-
-		if let Err(e) = verify_family_result {
-			warn!(target: "client", "Stage 3 block verification failed for #{} ({})\nError: {:?}", header.number(), header.hash(), e);
-			bail!(e);
-		};
-
-		let verify_external_result = self.verifier.verify_block_external(&header, engine);
-		if let Err(e) = verify_external_result {
-			warn!(target: "client", "Stage 4 block verification failed for #{} ({})\nError: {:?}", header.number(), header.hash(), e);
-			bail!(e);
-		};
-
-		// Enact Verified Block
-		let last_hashes = client.build_last_hashes(header.parent_hash());
-		let db = client.state_db.read().boxed_clone_canon(header.parent_hash());
-
-		let is_epoch_begin = chain.epoch_transition(parent.number(), *header.parent_hash()).is_some();
-		let enact_result = enact_verified(
-			block,
-			engine,
-			client.tracedb.read().tracing_enabled(),
-			db,
-			&parent,
-			last_hashes,
-			client.factories.clone(),
-			is_epoch_begin,
-			&mut chain.ancestry_with_metadata_iter(*header.parent_hash()),
-		);
-
-		let mut locked_block = match enact_result {
-			Ok(b) => b,
-			Err(e) => {
-				warn!(target: "client", "Block import failed for #{} ({})\nError: {:?}", header.number(), header.hash(), e);
-				bail!(e);
-			}
-		};
-
-		// Strip receipts for blocks before validate_receipts_transition,
-		// if the expected receipts root header does not match.
-		// (i.e. allow inconsistency in receipts outcome before the transition block)
-		if header.number() < engine.params().validate_receipts_transition
-			&& header.receipts_root() != locked_block.block().header().receipts_root()
-		{
-			locked_block.strip_receipts_outcomes();
-		}
-
-		// Final Verification
-		if let Err(e) = self.verifier.verify_block_final(&header, locked_block.block().header()) {
-			warn!(target: "client", "Stage 5 block verification failed for #{} ({})\nError: {:?}", header.number(), header.hash(), e);
-			bail!(e);
-		}
-
-		Ok(locked_block)
-	}
-
-	/// Import a block with transaction receipts.
-	///
-	/// The block is guaranteed to be the next best blocks in the
-	/// first block sequence. Does no sealing or transaction validation.
-	fn import_old_block(&self, unverified: Unverified, receipts_bytes: &[u8], db: &KeyValueDB, chain: &BlockChain) -> EthcoreResult<()> {
-		let receipts = ::rlp::decode_list(receipts_bytes);
-		let _import_lock = self.import_lock.lock();
-
-		{
-			trace_time!("import_old_block");
-			// verify the block, passing the chain for updating the epoch verifier.
-			let mut rng = OsRng::new()?;
-			self.ancient_verifier.verify(&mut rng, &unverified.header, &chain)?;
-
-			// Commit results
-			let mut batch = DBTransaction::new();
-			chain.insert_unordered_block(&mut batch, encoded::Block::new(unverified.bytes), receipts, None, false, true);
-			// Final commit to the DB
-			db.write_buffered(batch);
-			chain.commit();
-		}
-		db.flush().expect("DB flush failed.");
-		Ok(())
-	}
-
-	// NOTE: the header of the block passed here is not necessarily sealed, as
-	// it is for reconstructing the state transition.
-	//
-	// The header passed is from the original block data and is sealed.
-	fn commit_block<B>(&self, block: B, header: &Header, block_data: encoded::Block, client: &Client) -> ImportRoute where B: Drain {
-		let hash = &header.hash();
-		let number = header.number();
-		let parent = header.parent_hash();
-		let chain = client.chain.read();
-		let mut is_finalized = false;
-
-		// Commit results
-		let block = block.drain();
-		debug_assert_eq!(header.hash(), block_data.header_view().hash());
-
-		let mut batch = DBTransaction::new();
-
-		let ancestry_actions = self.engine.ancestry_actions(&header, &mut chain.ancestry_with_metadata_iter(*parent));
-
-		let receipts = block.receipts;
-		let traces = block.traces.drain();
-		let best_hash = chain.best_block_hash();
-
-		let new = ExtendedHeader {
-			header: header.clone(),
-			is_finalized,
-			parent_total_difficulty: chain.block_details(&parent).expect("Parent block is in the database; qed").total_difficulty
-		};
-
-		let best = {
-			let hash = best_hash;
-			let header = chain.block_header_data(&hash)
-				.expect("Best block is in the database; qed")
-				.decode()
-				.expect("Stored block header is valid RLP; qed");
-			let details = chain.block_details(&hash)
-				.expect("Best block is in the database; qed");
-
-			ExtendedHeader {
-				parent_total_difficulty: details.total_difficulty - *header.difficulty(),
-				is_finalized: details.is_finalized,
-				header: header,
-			}
-		};
-
-		let route = chain.tree_route(best_hash, *parent).expect("forks are only kept when it has common ancestors; tree route from best to prospective's parent always exists; qed");
-		let fork_choice = if route.is_from_route_finalized {
-			ForkChoice::Old
-		} else {
-			self.engine.fork_choice(&new, &best)
-		};
-
-		// CHECK! I *think* this is fine, even if the state_root is equal to another
-		// already-imported block of the same number.
-		// TODO: Prove it with a test.
-		let mut prove_state = block.state.drop().1;
-		prove_state.persist();
-		let mut state = prove_state.base();
-
-		// check epoch end signal, potentially generating a proof on the current
-		// state.
-		self.check_epoch_end_signal(
-			&header,
-			block_data.raw(),
-			&receipts,
-			&state,
-			&chain,
-			&mut batch,
-			client
-		);
-
-		state.journal_under(&mut batch, number, hash).expect("DB commit failed");
-
-		let finalized: Vec<_> = ancestry_actions.into_iter().map(|ancestry_action| {
-			let AncestryAction::MarkFinalized(a) = ancestry_action;
-
-			if a != header.hash() {
-				chain.mark_finalized(&mut batch, a).expect("Engine's ancestry action must be known blocks; qed");
-			} else {
-				// we're finalizing the current block
-				is_finalized = true;
-			}
-
-			a
-		}).collect();
-
-		let route = chain.insert_block(&mut batch, block_data, receipts.clone(), ExtrasInsert {
-			fork_choice: fork_choice,
-			is_finalized,
-		});
-
-		client.tracedb.read().import(&mut batch, TraceImportRequest {
-			traces: traces.into(),
-			block_hash: hash.clone(),
-			block_number: number,
-			enacted: route.enacted.clone(),
-			retracted: route.retracted.len()
-		});
-
-		let is_canon = route.enacted.last().map_or(false, |h| h == hash);
-		state.sync_cache(&route.enacted, &route.retracted, is_canon);
-		// Final commit to the DB
-		client.db.read().key_value().write_buffered(batch);
-		chain.commit();
-
-		self.check_epoch_end(&header, &finalized, &chain, client);
-
-		client.update_last_hashes(&parent, hash);
-
-		if let Err(e) = client.prune_ancient(state, &chain) {
-			warn!("Failed to prune ancient state data: {}", e);
-		}
-
-		route
-	}
-
-	// check for epoch end signal and write pending transition if it occurs.
-	// state for the given block must be available.
-	fn check_epoch_end_signal(
-		&self,
-		header: &Header,
-		block_bytes: &[u8],
-		receipts: &[Receipt],
-		state_db: &StateDB,
-		chain: &BlockChain,
-		batch: &mut DBTransaction,
-		client: &Client,
-	) {
-		use engines::EpochChange;
-
-		let hash = header.hash();
-		let auxiliary = ::machine::AuxiliaryData {
-			bytes: Some(block_bytes),
-			receipts: Some(&receipts),
-		};
-
-		match self.engine.signals_epoch_end(header, auxiliary) {
-			EpochChange::Yes(proof) => {
-				use engines::epoch::PendingTransition;
-				use engines::Proof;
-
-				let proof = match proof {
-					Proof::Known(proof) => proof,
-					Proof::WithState(with_state) => {
-						let env_info = EnvInfo {
-							number: header.number(),
-							author: header.author().clone(),
-							timestamp: header.timestamp(),
-							difficulty: header.difficulty().clone(),
-							last_hashes: client.build_last_hashes(header.parent_hash()),
-							gas_used: U256::default(),
-							gas_limit: u64::max_value().into(),
-						};
-
-						let call = move |addr, data| {
-							let mut state_db = state_db.boxed_clone();
-							let backend = ::state::backend::Proving::new(state_db.as_hashdb_mut());
-
-							let transaction =
-								client.contract_call_tx(BlockId::Hash(*header.parent_hash()), addr, data);
-
-							let mut state = State::from_existing(
-								backend,
-								header.state_root().clone(),
-								self.engine.account_start_nonce(header.number()),
-								client.factories.clone(),
-							).expect("state known to be available for just-imported block; qed");
-
-							let options = TransactOptions::with_no_tracing().dont_check_nonce();
-							let machine = self.engine.machine();
-							let schedule = machine.schedule(env_info.number);
-							let res = Executive::new(&mut state, &env_info, &machine, &schedule)
-								.transact(&transaction, options);
-
-							match res {
-								Err(ExecutionError::Internal(e)) =>
-									Err(format!("Internal error: {}", e)),
-								Err(e) => {
-									trace!(target: "client", "Proved call failed: {}", e);
-									let proof_vec: Vec<ProofElement> = state.drop().1.extract_proof().into();
-									let proof_data: Vec<Vec<u8>> = proof_vec.into_iter().map(|x| {
-										let value: DBValue = x.into();
-										value.into_vec()
-									}).collect();
-									Ok((Vec::new(), proof_data))
-								}
-								Ok(res) => {
-									let proof_vec: Vec<ProofElement> = state.drop().1.extract_proof().into();
-									let proof_data: Vec<Vec<u8>> = proof_vec.into_iter().map(|x| {
-										let value: DBValue = x.into();
-										value.into_vec()
-									}).collect();
-									Ok((res.output, proof_data))
-								},
-							}
-						};
-
-						match with_state.generate_proof(&call) {
-							Ok(proof) => proof,
-							Err(e) => {
-								warn!(target: "client", "Failed to generate transition proof for block {}: {}", hash, e);
-								warn!(target: "client", "Snapshots produced by this client may be incomplete");
-								Vec::new()
-							}
-						}
-					}
-				};
-
-				debug!(target: "client", "Block {} signals epoch end.", hash);
-
-				let pending = PendingTransition { proof: proof };
-				chain.insert_pending_transition(batch, hash, pending);
-			},
-			EpochChange::No => {},
-			EpochChange::Unsure(_) => {
-				warn!(target: "client", "Detected invalid engine implementation.");
-				warn!(target: "client", "Engine claims to require more block data, but everything provided.");
-			}
-		}
-	}
-
-	// check for ending of epoch and write transition if it occurs.
-	fn check_epoch_end<'a>(&self, header: &'a Header, finalized: &'a [H256], chain: &BlockChain, client: &Client) {
-		let is_epoch_end = self.engine.is_epoch_end(
-			header,
-			finalized,
-			&(|hash| client.block_header_decoded(BlockId::Hash(hash))),
-			&(|hash| chain.get_pending_transition(hash)), // TODO: limit to current epoch.
-		);
-
-		if let Some(proof) = is_epoch_end {
-			debug!(target: "client", "Epoch transition at block {}", header.hash());
-
-			let mut batch = DBTransaction::new();
-			chain.insert_epoch_transition(&mut batch, header.number(), EpochTransition {
-				block_hash: header.hash(),
-				block_number: header.number(),
-				proof: proof,
-			});
-
-			// always write the batch directly since epoch transition proofs are
-			// fetched from a DB iterator and DB iterators are only available on
-			// flushed data.
-			client.db.read().key_value().write(batch).expect("DB flush failed");
-		}
-	}
+	/// Miner instance
+	miner: Arc<Miner>,
 }
 
 impl Client {
@@ -770,13 +288,14 @@ impl Client {
 
 		let awake = match config.mode { Mode::Dark(..) | Mode::Off => false, _ => true };
 
-		let importer = Importer::new(&config, engine.clone(), message_channel.clone(), miner)?;
+		let block_queue = BlockQueue::new(config.queue.clone(), engine.clone(), message_channel.clone(), config.verifier_type.verifying_seal());
 
 		let registrar_address = engine.additional_params().get("registrar").and_then(|s| Address::from_str(s).ok());
 		if let Some(ref addr) = registrar_address {
 			trace!(target: "client", "Found registrar at {}", addr);
 		}
 
+		let verifier_type = config.verifier_type.clone();
 		let client = Arc::new(Client {
 			enabled: AtomicBool::new(true),
 			sleep_state: Mutex::new(SleepState::new(awake)),
@@ -784,7 +303,7 @@ impl Client {
 			mode: Mutex::new(config.mode.clone()),
 			chain: RwLock::new(chain),
 			tracedb: tracedb,
-			engine: engine,
+			engine: engine.clone(),
 			pruning: config.pruning.clone(),
 			db: RwLock::new(db.clone()),
 			state_db: RwLock::new(state_db),
@@ -802,8 +321,13 @@ impl Client {
 			on_user_defaults_change: Mutex::new(None),
 			registrar_address,
 			exit_handler: Mutex::new(None),
-			importer,
 			config,
+			import_lock: Mutex::new(()),
+			verifier: verification::new(verifier_type),
+			block_queue,
+			ancient_verifier: AncientVerifier::new(engine),
+			bad_blocks: Default::default(),
+			miner,
 		});
 
 		// prune old states.
@@ -895,8 +419,8 @@ impl Client {
 
 	/// Flush the block import queue.
 	pub fn flush_queue(&self) {
-		self.importer.block_queue.flush();
-		while !self.importer.block_queue.is_empty() {
+		self.block_queue.flush();
+		while !self.block_queue.is_empty() {
 			self.import_verified_blocks();
 		}
 	}
@@ -946,11 +470,6 @@ impl Client {
 		let mut cached_hashes = self.last_hashes.write();
 		*cached_hashes = VecDeque::from(last_hashes.clone());
 		Arc::new(last_hashes)
-	}
-
-	/// This is triggered by a message coming from a block queue when the block is ready for insertion
-	pub fn import_verified_blocks(&self) -> usize {
-		self.importer.import_verified_blocks(self)
 	}
 
 	// use a state-proving closure for the given block.
@@ -1017,7 +536,7 @@ impl Client {
 	/// Get shared miner reference.
 	#[cfg(test)]
 	pub fn miner(&self) -> Arc<Miner> {
-		self.importer.miner.clone()
+		self.miner.clone()
 	}
 
 	#[cfg(test)]
@@ -1117,7 +636,7 @@ impl Client {
 
 	fn check_garbage(&self) {
 		self.chain.read().collect_garbage();
-		self.importer.block_queue.collect_garbage();
+		self.block_queue.collect_garbage();
 		self.tracedb.read().collect_garbage();
 	}
 
@@ -1319,6 +838,458 @@ impl Client {
 			_   => self.block_header(id).and_then(|h| h.decode().ok())
 		}
 	}
+
+	/// This is triggered by a message coming from a block queue when the block is ready for insertion
+	pub fn import_verified_blocks(&self) -> usize {
+		// Shortcut out if we know we're incapable of syncing the chain.
+		if !self.enabled.load(AtomicOrdering::Relaxed) {
+			return 0;
+		}
+
+		let max_blocks_to_import = self.config.max_round_blocks_to_import;
+		let (imported_blocks, import_results, invalid_blocks, imported, proposed_blocks, duration, has_more_blocks_to_import) = {
+			let mut imported_blocks = Vec::with_capacity(max_blocks_to_import);
+			let mut invalid_blocks = HashSet::new();
+			let mut proposed_blocks = Vec::with_capacity(max_blocks_to_import);
+			let mut import_results = Vec::with_capacity(max_blocks_to_import);
+
+			let _import_lock = self.import_lock.lock();
+			let blocks = self.block_queue.drain(max_blocks_to_import);
+			if blocks.is_empty() {
+				return 0;
+			}
+			trace_time!("import_verified_blocks");
+			let start = Instant::now();
+
+			for block in blocks {
+				let header = block.header.clone();
+				let bytes = block.bytes.clone();
+				let hash = header.hash();
+
+				let is_invalid = invalid_blocks.contains(header.parent_hash());
+				if is_invalid {
+					invalid_blocks.insert(hash);
+					continue;
+				}
+
+				match self.check_and_lock_block(block) {
+					Ok(closed_block) => {
+						if self.engine.is_proposal(&header) {
+							self.block_queue.mark_as_good(&[hash]);
+							proposed_blocks.push(bytes);
+						} else {
+							imported_blocks.push(hash);
+
+							let transactions_len = closed_block.transactions().len();
+
+							let route = self.commit_block(closed_block, &header, encoded::Block::new(bytes));
+							import_results.push(route);
+
+							self.report.write().accrue_block(&header, transactions_len);
+						}
+					},
+					Err(err) => {
+						self.bad_blocks.report(bytes, format!("{:?}", err));
+						invalid_blocks.insert(hash);
+					},
+				}
+			}
+
+			let imported = imported_blocks.len();
+			let invalid_blocks = invalid_blocks.into_iter().collect::<Vec<H256>>();
+
+			if !invalid_blocks.is_empty() {
+				self.block_queue.mark_as_bad(&invalid_blocks);
+			}
+			let has_more_blocks_to_import = !self.block_queue.mark_as_good(&imported_blocks);
+			(imported_blocks, import_results, invalid_blocks, imported, proposed_blocks, start.elapsed(), has_more_blocks_to_import)
+		};
+
+		{
+			if !imported_blocks.is_empty() {
+				let route = ChainRoute::from(import_results.as_ref());
+
+				if !has_more_blocks_to_import {
+					self.miner.chain_new_blocks(self, &imported_blocks, &invalid_blocks, route.enacted(), route.retracted(), false);
+				}
+
+				self.notify(|notify| {
+					notify.new_blocks(
+						NewBlocks::new(
+						imported_blocks.clone(),
+						invalid_blocks.clone(),
+						route.clone(),
+						Vec::new(),
+						proposed_blocks.clone(),
+						duration,
+							has_more_blocks_to_import,
+						)
+					);
+				});
+			}
+		}
+
+		let db = self.db.read();
+		db.key_value().flush().expect("DB flush failed.");
+		imported
+	}
+
+	fn check_and_lock_block(&self, block: PreverifiedBlock) -> EthcoreResult<LockedBlock> {
+		let engine = &*self.engine;
+		let header = block.header.clone();
+
+		// Check the block isn't so old we won't be able to enact it.
+		let best_block_number = self.chain.read().best_block_number();
+		if self.pruning_info().earliest_state > header.number() {
+			warn!(target: "client", "Block import failed for #{} ({})\nBlock is ancient (current best block: #{}).", header.number(), header.hash(), best_block_number);
+			bail!("Block is ancient");
+		}
+
+		// Check if parent is in chain
+		let parent = match self.block_header_decoded(BlockId::Hash(*header.parent_hash())) {
+			Some(h) => h,
+			None => {
+				warn!(target: "client", "Block import failed for #{} ({}): Parent not found ({}) ", header.number(), header.hash(), header.parent_hash());
+				bail!("Parent not found");
+			}
+		};
+
+		let chain = self.chain.read();
+		// Verify Block Family
+		let verify_family_result = self.verifier.verify_block_family(
+			&header,
+			&parent,
+			engine,
+			Some(verification::FullFamilyParams {
+				block: &block,
+				block_provider: &**chain,
+				client: &self,
+			}),
+		);
+
+		if let Err(e) = verify_family_result {
+			warn!(target: "client", "Stage 3 block verification failed for #{} ({})\nError: {:?}", header.number(), header.hash(), e);
+			bail!(e);
+		};
+
+		let verify_external_result = self.verifier.verify_block_external(&header, engine);
+		if let Err(e) = verify_external_result {
+			warn!(target: "client", "Stage 4 block verification failed for #{} ({})\nError: {:?}", header.number(), header.hash(), e);
+			bail!(e);
+		};
+
+		// Enact Verified Block
+		let last_hashes = self.build_last_hashes(header.parent_hash());
+		let db = self.state_db.read().boxed_clone_canon(header.parent_hash());
+
+		let is_epoch_begin = chain.epoch_transition(parent.number(), *header.parent_hash()).is_some();
+		let enact_result = enact_verified(
+			block,
+			engine,
+			self.tracedb.read().tracing_enabled(),
+			db,
+			&parent,
+			last_hashes,
+			self.factories.clone(),
+			is_epoch_begin,
+			&mut chain.ancestry_with_metadata_iter(*header.parent_hash()),
+		);
+
+		let mut locked_block = match enact_result {
+			Ok(b) => b,
+			Err(e) => {
+				warn!(target: "client", "Block import failed for #{} ({})\nError: {:?}", header.number(), header.hash(), e);
+				bail!(e);
+			}
+		};
+
+		// Strip receipts for blocks before validate_receipts_transition,
+		// if the expected receipts root header does not match.
+		// (i.e. allow inconsistency in receipts outcome before the transition block)
+		if header.number() < engine.params().validate_receipts_transition
+			&& header.receipts_root() != locked_block.block().header().receipts_root()
+		{
+			locked_block.strip_receipts_outcomes();
+		}
+
+		// Final Verification
+		if let Err(e) = self.verifier.verify_block_final(&header, locked_block.block().header()) {
+			warn!(target: "client", "Stage 5 block verification failed for #{} ({})\nError: {:?}", header.number(), header.hash(), e);
+			bail!(e);
+		}
+
+		Ok(locked_block)
+	}
+
+	/// Import a block with transaction receipts.
+	///
+	/// The block is guaranteed to be the next best blocks in the
+	/// first block sequence. Does no sealing or transaction validation.
+	fn import_old_block(&self, unverified: Unverified, receipts_bytes: &[u8], db: &KeyValueDB, chain: &BlockChain) -> EthcoreResult<()> {
+		let receipts = ::rlp::decode_list(receipts_bytes);
+		let _import_lock = self.import_lock.lock();
+
+		{
+			trace_time!("import_old_block");
+			// verify the block, passing the chain for updating the epoch verifier.
+			let mut rng = OsRng::new()?;
+			self.ancient_verifier.verify(&mut rng, &unverified.header, &chain)?;
+
+			// Commit results
+			let mut batch = DBTransaction::new();
+			chain.insert_unordered_block(&mut batch, encoded::Block::new(unverified.bytes), receipts, None, false, true);
+			// Final commit to the DB
+			db.write_buffered(batch);
+			chain.commit();
+		}
+		db.flush().expect("DB flush failed.");
+		Ok(())
+	}
+
+	// NOTE: the header of the block passed here is not necessarily sealed, as
+	// it is for reconstructing the state transition.
+	//
+	// The header passed is from the original block data and is sealed.
+	fn commit_block<B>(&self, block: B, header: &Header, block_data: encoded::Block) -> ImportRoute where B: Drain {
+		let hash = &header.hash();
+		let number = header.number();
+		let parent = header.parent_hash();
+		let chain = self.chain.read();
+		let mut is_finalized = false;
+
+		// Commit results
+		let block = block.drain();
+		debug_assert_eq!(header.hash(), block_data.header_view().hash());
+
+		let mut batch = DBTransaction::new();
+
+		let ancestry_actions = self.engine.ancestry_actions(&header, &mut chain.ancestry_with_metadata_iter(*parent));
+
+		let receipts = block.receipts;
+		let traces = block.traces.drain();
+		let best_hash = chain.best_block_hash();
+
+		let new = ExtendedHeader {
+			header: header.clone(),
+			is_finalized,
+			parent_total_difficulty: chain.block_details(&parent).expect("Parent block is in the database; qed").total_difficulty
+		};
+
+		let best = {
+			let hash = best_hash;
+			let header = chain.block_header_data(&hash)
+				.expect("Best block is in the database; qed")
+				.decode()
+				.expect("Stored block header is valid RLP; qed");
+			let details = chain.block_details(&hash)
+				.expect("Best block is in the database; qed");
+
+			ExtendedHeader {
+				parent_total_difficulty: details.total_difficulty - *header.difficulty(),
+				is_finalized: details.is_finalized,
+				header: header,
+			}
+		};
+
+		let route = chain.tree_route(best_hash, *parent).expect("forks are only kept when it has common ancestors; tree route from best to prospective's parent always exists; qed");
+		let fork_choice = if route.is_from_route_finalized {
+			ForkChoice::Old
+		} else {
+			self.engine.fork_choice(&new, &best)
+		};
+
+		// CHECK! I *think* this is fine, even if the state_root is equal to another
+		// already-imported block of the same number.
+		// TODO: Prove it with a test.
+		let mut prove_state = block.state.drop().1;
+		prove_state.persist();
+		let mut state = prove_state.base();
+
+		// check epoch end signal, potentially generating a proof on the current
+		// state.
+		self.check_epoch_end_signal(
+			&header,
+			block_data.raw(),
+			&receipts,
+			&state,
+			&chain,
+			&mut batch
+		);
+
+		state.journal_under(&mut batch, number, hash).expect("DB commit failed");
+
+		let finalized: Vec<_> = ancestry_actions.into_iter().map(|ancestry_action| {
+			let AncestryAction::MarkFinalized(a) = ancestry_action;
+
+			if a != header.hash() {
+				chain.mark_finalized(&mut batch, a).expect("Engine's ancestry action must be known blocks; qed");
+			} else {
+				// we're finalizing the current block
+				is_finalized = true;
+			}
+
+			a
+		}).collect();
+
+		let route = chain.insert_block(&mut batch, block_data, receipts.clone(), ExtrasInsert {
+			fork_choice: fork_choice,
+			is_finalized,
+		});
+
+		self.tracedb.read().import(&mut batch, TraceImportRequest {
+			traces: traces.into(),
+			block_hash: hash.clone(),
+			block_number: number,
+			enacted: route.enacted.clone(),
+			retracted: route.retracted.len()
+		});
+
+		let is_canon = route.enacted.last().map_or(false, |h| h == hash);
+		state.sync_cache(&route.enacted, &route.retracted, is_canon);
+		// Final commit to the DB
+		self.db.read().key_value().write_buffered(batch);
+		chain.commit();
+
+		self.check_epoch_end(&header, &finalized, &chain);
+
+		self.update_last_hashes(&parent, hash);
+
+		if let Err(e) = self.prune_ancient(state, &chain) {
+			warn!("Failed to prune ancient state data: {}", e);
+		}
+
+		route
+	}
+
+	// check for epoch end signal and write pending transition if it occurs.
+	// state for the given block must be available.
+	fn check_epoch_end_signal(
+		&self,
+		header: &Header,
+		block_bytes: &[u8],
+		receipts: &[Receipt],
+		state_db: &StateDB,
+		chain: &BlockChain,
+		batch: &mut DBTransaction
+	) {
+		use engines::EpochChange;
+
+		let hash = header.hash();
+		let auxiliary = ::machine::AuxiliaryData {
+			bytes: Some(block_bytes),
+			receipts: Some(&receipts),
+		};
+
+		match self.engine.signals_epoch_end(header, auxiliary) {
+			EpochChange::Yes(proof) => {
+				use engines::epoch::PendingTransition;
+				use engines::Proof;
+
+				let proof = match proof {
+					Proof::Known(proof) => proof,
+					Proof::WithState(with_state) => {
+						let env_info = EnvInfo {
+							number: header.number(),
+							author: header.author().clone(),
+							timestamp: header.timestamp(),
+							difficulty: header.difficulty().clone(),
+							last_hashes: self.build_last_hashes(header.parent_hash()),
+							gas_used: U256::default(),
+							gas_limit: u64::max_value().into(),
+						};
+
+						let call = move |addr, data| {
+							let mut state_db = state_db.boxed_clone();
+							let backend = ::state::backend::Proving::new(state_db.as_hashdb_mut());
+
+							let transaction =
+								self.contract_call_tx(BlockId::Hash(*header.parent_hash()), addr, data);
+
+							let mut state = State::from_existing(
+								backend,
+								header.state_root().clone(),
+								self.engine.account_start_nonce(header.number()),
+								self.factories.clone(),
+							).expect("state known to be available for just-imported block; qed");
+
+							let options = TransactOptions::with_no_tracing().dont_check_nonce();
+							let machine = self.engine.machine();
+							let schedule = machine.schedule(env_info.number);
+							let res = Executive::new(&mut state, &env_info, &machine, &schedule)
+								.transact(&transaction, options);
+
+							match res {
+								Err(ExecutionError::Internal(e)) =>
+									Err(format!("Internal error: {}", e)),
+								Err(e) => {
+									trace!(target: "client", "Proved call failed: {}", e);
+									let proof_vec: Vec<ProofElement> = state.drop().1.extract_proof().into();
+									let proof_data: Vec<Vec<u8>> = proof_vec.into_iter().map(|x| {
+										let value: DBValue = x.into();
+										value.into_vec()
+									}).collect();
+									Ok((Vec::new(), proof_data))
+								}
+								Ok(res) => {
+									let proof_vec: Vec<ProofElement> = state.drop().1.extract_proof().into();
+									let proof_data: Vec<Vec<u8>> = proof_vec.into_iter().map(|x| {
+										let value: DBValue = x.into();
+										value.into_vec()
+									}).collect();
+									Ok((res.output, proof_data))
+								},
+							}
+						};
+
+						match with_state.generate_proof(&call) {
+							Ok(proof) => proof,
+							Err(e) => {
+								warn!(target: "client", "Failed to generate transition proof for block {}: {}", hash, e);
+								warn!(target: "client", "Snapshots produced by this client may be incomplete");
+								Vec::new()
+							}
+						}
+					}
+				};
+
+				debug!(target: "client", "Block {} signals epoch end.", hash);
+
+				let pending = PendingTransition { proof: proof };
+				chain.insert_pending_transition(batch, hash, pending);
+			},
+			EpochChange::No => {},
+			EpochChange::Unsure(_) => {
+				warn!(target: "client", "Detected invalid engine implementation.");
+				warn!(target: "client", "Engine claims to require more block data, but everything provided.");
+			}
+		}
+	}
+
+	// check for ending of epoch and write transition if it occurs.
+	fn check_epoch_end<'a>(&self, header: &'a Header, finalized: &'a [H256], chain: &BlockChain) {
+		let is_epoch_end = self.engine.is_epoch_end(
+			header,
+			finalized,
+			&(|hash| self.block_header_decoded(BlockId::Hash(hash))),
+			&(|hash| chain.get_pending_transition(hash)), // TODO: limit to current epoch.
+		);
+
+		if let Some(proof) = is_epoch_end {
+			debug!(target: "client", "Epoch transition at block {}", header.hash());
+
+			let mut batch = DBTransaction::new();
+			chain.insert_epoch_transition(&mut batch, header.number(), EpochTransition {
+				block_hash: header.hash(),
+				block_number: header.number(),
+				proof: proof,
+			});
+
+			// always write the batch directly since epoch transition proofs are
+			// fetched from a DB iterator and DB iterators are only available on
+			// flushed data.
+			self.db.read().key_value().write(batch).expect("DB flush failed");
+		}
+	}
 }
 
 impl snapshot::DatabaseRestore for Client {
@@ -1326,11 +1297,11 @@ impl snapshot::DatabaseRestore for Client {
 	fn restore_db(&self, new_db: &str) -> Result<(), EthcoreError> {
 		trace!(target: "snapshot", "Replacing client database with {:?}", new_db);
 
-		let _import_lock = self.importer.import_lock.lock();
+		let _import_lock = self.import_lock.lock();
 		let mut state_db = self.state_db.write();
 		let mut chain = self.chain.write();
 		let mut tracedb = self.tracedb.write();
-		self.importer.miner.clear();
+		self.miner.clear();
 		let db = self.db.write();
 		db.restore(new_db)?;
 
@@ -1362,7 +1333,7 @@ impl AccountData for Client {}
 impl ChainInfo for Client {
 	fn chain_info(&self) -> BlockChainInfo {
 		let mut chain_info = self.chain.read().chain_info();
-		chain_info.pending_total_difficulty = chain_info.total_difficulty + self.importer.block_queue.total_difficulty();
+		chain_info.pending_total_difficulty = chain_info.total_difficulty + self.block_queue.total_difficulty();
 		chain_info
 	}
 }
@@ -1438,7 +1409,7 @@ impl ImportBlock for Client {
 			bail!(EthcoreErrorKind::Block(BlockError::UnknownParent(unverified.parent_hash())));
 		}
 
-		let raw = if self.importer.block_queue.is_empty() {
+		let raw = if self.block_queue.is_empty() {
 			Some((
 				unverified.bytes.clone(),
 				unverified.header.hash(),
@@ -1446,7 +1417,7 @@ impl ImportBlock for Client {
 			))
 		} else { None };
 
-		match self.importer.block_queue.import(unverified) {
+		match self.block_queue.import(unverified) {
 			Ok(hash) => {
 				if let Some((raw, hash, difficulty)) = raw {
 					self.notify(move |n| n.block_pre_import(&raw, &hash, &difficulty));
@@ -1455,7 +1426,7 @@ impl ImportBlock for Client {
 			},
 			// we only care about block errors (not import errors)
 			Err((block, EthcoreError(EthcoreErrorKind::Block(err), _))) => {
-				self.importer.bad_blocks.report(block.bytes, format!("{:?}", err));
+				self.bad_blocks.report(block.bytes, format!("{:?}", err));
 				bail!(EthcoreErrorKind::Block(err))
 			},
 			Err((_, e)) => Err(e),
@@ -1604,7 +1575,7 @@ impl EngineInfo for Client {
 
 impl BadBlocks for Client {
 	fn bad_blocks(&self) -> Vec<(Unverified, String)> {
-		self.importer.bad_blocks.bad_blocks()
+		self.bad_blocks.bad_blocks()
 	}
 }
 
@@ -1701,7 +1672,7 @@ impl BlockChainClient for Client {
 		let chain = self.chain.read();
 		match Self::block_hash(&chain, id) {
 			Some(ref hash) if chain.is_known(hash) => BlockStatus::InChain,
-			Some(hash) => self.importer.block_queue.status(&hash).into(),
+			Some(hash) => self.block_queue.status(&hash).into(),
 			None => BlockStatus::Unknown
 		}
 	}
@@ -1903,15 +1874,15 @@ impl BlockChainClient for Client {
 	}
 
 	fn queue_info(&self) -> BlockQueueInfo {
-		self.importer.block_queue.queue_info()
+		self.block_queue.queue_info()
 	}
 
 	fn is_queue_empty(&self) -> bool {
-		self.importer.block_queue.is_empty()
+		self.block_queue.is_empty()
 	}
 
 	fn clear_queue(&self) {
-		self.importer.block_queue.clear();
+		self.block_queue.clear();
 	}
 
 	fn additional_params(&self) -> BTreeMap<String, String> {
@@ -2094,7 +2065,7 @@ impl BlockChainClient for Client {
 				).as_u64() as usize
 			)
 		};
-		self.importer.miner.ready_transactions(self, max_len, ::miner::PendingOrdering::Priority)
+		self.miner.ready_transactions(self, max_len, ::miner::PendingOrdering::Priority)
 	}
 
 	fn signing_chain_id(&self) -> Option<u64> {
@@ -2123,12 +2094,12 @@ impl BlockChainClient for Client {
 	}
 
 	fn transact_contract(&self, address: Address, data: Bytes) -> Result<(), transaction::Error> {
-		let authoring_params = self.importer.miner.authoring_params();
+		let authoring_params = self.miner.authoring_params();
 		let transaction = Transaction {
 			nonce: self.latest_nonce(&authoring_params.author),
 			action: Action::Call(address),
-			gas: self.importer.miner.sensible_gas_limit(),
-			gas_price: self.importer.miner.sensible_gas_price(),
+			gas: self.miner.sensible_gas_limit(),
+			gas_price: self.miner.sensible_gas_price(),
 			value: U256::zero(),
 			data: data,
 		};
@@ -2136,7 +2107,7 @@ impl BlockChainClient for Client {
 		let signature = self.engine.sign(transaction.hash(chain_id))
 			.map_err(|e| transaction::Error::InvalidSignature(e.to_string()))?;
 		let signed = SignedTransaction::new(transaction.with_signature(signature, chain_id))?;
-		self.importer.miner.import_own_transaction(self, signed.into())
+		self.miner.import_own_transaction(self, signed.into())
 	}
 
 	fn registrar_address(&self) -> Option<Address> {
@@ -2160,7 +2131,7 @@ impl IoClient for Client {
 				notify.transactions_received(&txs, peer_id);
 			});
 
-			client.importer.miner.import_external_transactions(client, txs);
+			client.miner.import_external_transactions(client, txs);
 		}).unwrap_or_else(|e| {
 			debug!(target: "client", "Ignoring {} transactions: {}", len, e);
 		});
@@ -2202,7 +2173,7 @@ impl IoClient for Client {
 				let first = queued.write().1.pop_front();
 				if let Some((unverified, receipts_bytes)) = first {
 					let hash = unverified.hash();
-					let result = client.importer.import_old_block(
+					let result = client.import_old_block(
 						unverified,
 						&receipts_bytes,
 						&**client.db.read().key_value(),
@@ -2329,7 +2300,7 @@ impl ImportSealedBlock for Client {
 		let route = {
 			// Do a super duper basic verification to detect potential bugs
 			if let Err(e) = self.engine.verify_block_basic(&header) {
-				self.importer.bad_blocks.report(
+				self.bad_blocks.report(
 					block.rlp_bytes(),
 					format!("Detected an issue with locally sealed block: {}", e),
 				);
@@ -2337,18 +2308,18 @@ impl ImportSealedBlock for Client {
 			}
 
 			// scope for self.import_lock
-			let _import_lock = self.importer.import_lock.lock();
+			let _import_lock = self.import_lock.lock();
 			trace_time!("import_sealed_block");
 
 			let block_data = block.rlp_bytes();
 
-			let route = self.importer.commit_block(block, &header, encoded::Block::new(block_data), self);
+			let route = self.commit_block(block, &header, encoded::Block::new(block_data));
 			trace!(target: "client", "Imported sealed block #{} ({})", header.number(), hash);
 			self.state_db.write().sync_cache(&route.enacted, &route.retracted, false);
 			route
 		};
 		let route = ChainRoute::from([route].as_ref());
-		self.importer.miner.chain_new_blocks(
+		self.miner.chain_new_blocks(
 			self,
 			&[hash],
 			&[],
@@ -2400,11 +2371,11 @@ impl ::miner::BlockChainClient for Client {}
 
 impl super::traits::EngineClient for Client {
 	fn update_sealing(&self) {
-		self.importer.miner.update_sealing(self)
+		self.miner.update_sealing(self)
 	}
 
 	fn submit_seal(&self, block_hash: H256, seal: Vec<Bytes>) {
-		let import = self.importer.miner.submit_seal(block_hash, seal).and_then(|block| self.import_sealed_block(block));
+		let import = self.miner.submit_seal(block_hash, seal).and_then(|block| self.import_sealed_block(block));
 		if let Err(err) = import {
 			warn!(target: "poa", "Wrong internal seal submission! {:?}", err);
 		}
