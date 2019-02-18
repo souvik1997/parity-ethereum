@@ -20,6 +20,7 @@ mod ancient_import;
 mod bad_blocks;
 mod client;
 mod config;
+mod core;
 #[cfg(any(test, feature = "test-helpers"))]
 mod evm_test_client;
 mod io_message;
