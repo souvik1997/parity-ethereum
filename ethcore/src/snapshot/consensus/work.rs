@@ -25,11 +25,14 @@ use super::{SnapshotComponents, Rebuilder, ChunkSink};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 
 use blockchain::{BlockChain, BlockChainDB, BlockProvider};
 use engines::EthEngine;
 use snapshot::{Error, ManifestData, Progress};
 use snapshot::block::AbridgedBlock;
+use state::backend::Backend;
 use ethereum_types::H256;
 use kvdb::KeyValueDB;
 use bytes::Bytes;
@@ -41,25 +44,30 @@ use encoded;
 /// This includes blocks from the head of the chain as a
 /// loose assurance that the chain is valid.
 #[derive(Clone, Copy, PartialEq)]
-pub struct PowSnapshot {
+pub struct PowSnapshot<B> {
 	/// Number of blocks from the head of the chain
 	/// to include in the snapshot.
 	pub blocks: u64,
 	/// Number of to allow in the snapshot when restoring.
 	pub max_restore_blocks: u64,
+	pub _phantom: SafePhantomData<B>
 }
 
-impl PowSnapshot {
+impl<B> PowSnapshot<B> {
 	/// Create a new instance.
-	pub fn new(blocks: u64, max_restore_blocks: u64) -> PowSnapshot {
+	pub fn new(blocks: u64, max_restore_blocks: u64) -> Self {
 		PowSnapshot {
 			blocks: blocks,
 			max_restore_blocks: max_restore_blocks,
+			_phantom: PhantomData,
 		}
 	}
 }
 
-impl SnapshotComponents for PowSnapshot {
+impl<B: Backend + Clone + 'static> SnapshotComponents for PowSnapshot<B> {
+
+	type StateBackend = B;
+
 	fn chunk_all(
 		&mut self,
 		chain: &BlockChain,
@@ -83,7 +91,7 @@ impl SnapshotComponents for PowSnapshot {
 		chain: BlockChain,
 		db: Arc<BlockChainDB>,
 		manifest: &ManifestData,
-	) -> Result<Box<Rebuilder>, ::error::Error> {
+	) -> Result<Box<Rebuilder<EngineStateBackend = B>>, ::error::Error> {
 		PowRebuilder::new(chain, db.key_value().clone(), manifest, self.max_restore_blocks).map(|r| Box::new(r) as Box<_>)
 	}
 
@@ -192,7 +200,7 @@ impl<'a> PowWorker<'a> {
 /// chunk before it, as chunks may be submitted out-of-order.
 ///
 /// After all chunks have been submitted, we "glue" the chunks together.
-pub struct PowRebuilder {
+pub struct PowRebuilder<B> {
 	chain: BlockChain,
 	db: Arc<KeyValueDB>,
 	rng: OsRng,
@@ -202,9 +210,10 @@ pub struct PowRebuilder {
 	best_root: H256,
 	fed_blocks: u64,
 	snapshot_blocks: u64,
+	_phantom: SafePhantomData<B>
 }
 
-impl PowRebuilder {
+impl<B> PowRebuilder<B> {
 	/// Create a new PowRebuilder.
 	fn new(chain: BlockChain, db: Arc<KeyValueDB>, manifest: &ManifestData, snapshot_blocks: u64) -> Result<Self, ::error::Error> {
 		Ok(PowRebuilder {
@@ -217,14 +226,18 @@ impl PowRebuilder {
 			best_root: manifest.state_root,
 			fed_blocks: 0,
 			snapshot_blocks: snapshot_blocks,
+			_phantom: PhantomData,
 		})
 	}
 }
 
-impl Rebuilder for PowRebuilder {
+impl<B: Backend + Clone + 'static> Rebuilder for PowRebuilder<B> {
+
+	type EngineStateBackend = B;
+
 	/// Feed the rebuilder an uncompressed block chunk.
 	/// Returns the number of blocks fed or any errors.
-	fn feed(&mut self, chunk: &[u8], engine: &EthEngine, abort_flag: &AtomicBool) -> Result<(), ::error::Error> {
+	fn feed(&mut self, chunk: &[u8], engine: &EthEngine<B>, abort_flag: &AtomicBool) -> Result<(), ::error::Error> {
 		use snapshot::verify_old_block;
 		use ethereum_types::U256;
 		use triehash::ordered_trie_root;
@@ -298,7 +311,7 @@ impl Rebuilder for PowRebuilder {
 	}
 
 	/// Glue together any disconnected chunks and check that the chain is complete.
-	fn finalize(&mut self, _: &EthEngine) -> Result<(), ::error::Error> {
+	fn finalize(&mut self, _: &EthEngine<B>) -> Result<(), ::error::Error> {
 		let mut batch = self.db.transaction();
 
 		for (first_num, first_hash) in self.disconnected.drain(..) {

@@ -19,7 +19,7 @@
 use std::time::{Instant, Duration};
 use ethereum_types::{H256, U256};
 use ethcore::client::{self, EvmTestClient, EvmTestError, TransactResult};
-use ethcore::{trace, spec, pod_state};
+use ethcore::{trace, spec, pod_state, state_db::StateDB};
 use ethjson;
 use transaction;
 use vm::ActionParams;
@@ -67,7 +67,7 @@ pub type RunResult<T> = Result<Success<T>, Failure<T>>;
 
 /// Execute given `ActionParams` and return the result.
 pub fn run_action<T: Informant>(
-	spec: &spec::Spec,
+	spec: &spec::Spec<StateDB>,
 	mut params: ActionParams,
 	mut informant: T,
 ) -> RunResult<T::Output> {
@@ -140,7 +140,7 @@ pub fn run_transaction<T: Informant>(
 
 /// Execute VM with given `ActionParams`
 pub fn run<'a, F, X>(
-	spec: &'a spec::Spec,
+	spec: &'a spec::Spec<StateDB>,
 	initial_gas: U256,
 	pre_state: &'a pod_state::PodState,
 	run: F,

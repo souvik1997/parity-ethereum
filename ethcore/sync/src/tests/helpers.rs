@@ -28,6 +28,7 @@ use ethcore::snapshot::SnapshotService;
 use ethcore::spec::Spec;
 use ethcore::account_provider::AccountProvider;
 use ethcore::miner::Miner;
+use ethcore::state_db::StateDB;
 use ethcore::test_helpers;
 use sync_io::SyncIo;
 use io::{IoChannel, IoContext, IoHandler};
@@ -80,7 +81,7 @@ impl<'p, C> Drop for TestIo<'p, C> where C: FlushingBlockChainClient, C: 'p {
 	}
 }
 
-impl<'p, C> SyncIo for TestIo<'p, C> where C: FlushingBlockChainClient, C: 'p {
+impl<'p, C> SyncIo for TestIo<'p, C> where C: FlushingBlockChainClient, C: 'p, C: BlockChainClient<StateBackend = StateDB> {
 	fn disable_peer(&mut self, peer_id: PeerId) {
 		self.disconnect_peer(peer_id);
 	}
@@ -115,7 +116,7 @@ impl<'p, C> SyncIo for TestIo<'p, C> where C: FlushingBlockChainClient, C: 'p {
 		self.send(peer_id, packet_id, data)
 	}
 
-	fn chain(&self) -> &BlockChainClient {
+	fn chain(&self) -> &BlockChainClient<StateBackend = StateDB> {
 		&*self.chain
 	}
 
@@ -207,7 +208,7 @@ pub trait Peer {
 
 pub struct EthPeer<C> where C: FlushingBlockChainClient {
 	pub chain: Arc<C>,
-	pub miner: Arc<Miner>,
+	pub miner: Arc<Miner<StateDB>>,
 	pub snapshot_service: Arc<TestSnapshotService>,
 	pub sync: RwLock<ChainSync>,
 	pub queue: RwLock<VecDeque<TestPacket>>,
@@ -216,7 +217,7 @@ pub struct EthPeer<C> where C: FlushingBlockChainClient {
 	new_blocks_queue: RwLock<VecDeque<NewBlockMessage>>,
 }
 
-impl<C> EthPeer<C> where C: FlushingBlockChainClient {
+impl<C> EthPeer<C> where C: FlushingBlockChainClient + BlockChainClient<StateBackend = StateDB> {
 	fn is_io_queue_empty(&self) -> bool {
 		self.io_queue.read().is_empty()
 	}
@@ -250,7 +251,7 @@ impl<C> EthPeer<C> where C: FlushingBlockChainClient {
 	}
 }
 
-impl<C: FlushingBlockChainClient> Peer for EthPeer<C> {
+impl<C: FlushingBlockChainClient + BlockChainClient<StateBackend = StateDB>> Peer for EthPeer<C> {
 	type Message = TestPacket;
 
 	fn on_connect(&self, other: PeerId) {
@@ -346,7 +347,7 @@ impl TestNet<EthPeer<TestBlockChainClient>> {
 				sync: RwLock::new(sync),
 				snapshot_service: ss,
 				chain: Arc::new(chain),
-				miner: Arc::new(Miner::new_for_tests(&Spec::new_test(), None)),
+				miner: Arc::new(Miner::new_for_tests(&Spec::<StateDB>::new_test(), None)),
 				queue: RwLock::new(VecDeque::new()),
 				private_tx_handler,
 				io_queue: RwLock::new(VecDeque::new()),
@@ -369,7 +370,7 @@ impl TestNet<EthPeer<EthcoreClient>> {
 		spec_factory: F,
 		accounts: Option<Arc<AccountProvider>>
 	) -> Self
-		where F: Fn() -> Spec
+		where F: Fn() -> Spec<StateDB>
 	{
 		let mut net = TestNet {
 			peers: Vec::new(),
@@ -382,7 +383,7 @@ impl TestNet<EthPeer<EthcoreClient>> {
 		net
 	}
 
-	pub fn add_peer_with_private_config(&mut self, config: SyncConfig, spec: Spec, accounts: Option<Arc<AccountProvider>>) {
+	pub fn add_peer_with_private_config(&mut self, config: SyncConfig, spec: Spec<StateDB>, accounts: Option<Arc<AccountProvider>>) {
 		let channel = IoChannel::disconnected();
 		let miner = Arc::new(Miner::new_for_tests(&spec, accounts.clone()));
 		let client = EthcoreClient::new(
@@ -500,7 +501,7 @@ impl<P> TestNet<P> where P: Peer {
 	}
 }
 
-impl<C: FlushingBlockChainClient> TestNet<EthPeer<C>> {
+impl<C: FlushingBlockChainClient + BlockChainClient<StateBackend = StateDB>> TestNet<EthPeer<C>> {
 	pub fn trigger_chain_new_blocks(&mut self, peer_id: usize) {
 		let peer = &mut self.peers[peer_id];
 		peer.sync.write().chain_new_blocks(&mut TestIo::new(&*peer.chain, &peer.snapshot_service, &peer.queue, None), &[], &[], &[], &[], &[], &[]);

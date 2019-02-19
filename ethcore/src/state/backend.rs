@@ -138,7 +138,7 @@ mod test {
 }
 
 /// State backend. See module docs for more details.
-pub trait Backend: Send + AsHashDB<KeccakHasher, DBValue> {
+pub trait Backend: Send + Sync + AsHashDB<KeccakHasher, DBValue> {
 
 	/// Add an account entry to the cache.
 	fn add_to_account_cache(&mut self, addr: Address, data: Option<Account>, modified: bool);

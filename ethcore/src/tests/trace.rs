@@ -32,13 +32,14 @@ use transaction::{Action, Transaction};
 use views::BlockView;
 use trace::{RewardType, LocalizedTrace};
 use trace::trace::Action::Reward;
+use state_db::StateDB;
 use test_helpers;
 use verification::queue::kind::blocks::Unverified;
 
 #[test]
 fn can_trace_block_and_uncle_reward() {
 	let db = test_helpers::new_db();
-	let spec = Spec::new_test_with_reward();
+	let spec = Spec::<StateDB>::new_test_with_reward();
 	let engine = &*spec.engine;
 
 	// Create client

@@ -32,6 +32,7 @@ use ethcore::ethstore::ethkey::Secret;
 use ethcore::client::{BlockChainClient, ChainNotify, NewBlocks, ChainMessageType};
 use ethcore::snapshot::SnapshotService;
 use ethcore::header::BlockNumber;
+use ethcore::state_db::StateDB;
 use sync_io::NetSyncIo;
 use chain::{ChainSyncApi, SyncStatus as EthSyncStatus};
 use std::net::{SocketAddr, AddrParseError};
@@ -264,7 +265,7 @@ pub struct Params {
 	/// Configuration.
 	pub config: SyncConfig,
 	/// Blockchain client.
-	pub chain: Arc<BlockChainClient>,
+	pub chain: Arc<BlockChainClient<StateBackend = StateDB>>,
 	/// Snapshot service.
 	pub snapshot_service: Arc<SnapshotService>,
 	/// Private tx service.
@@ -429,7 +430,7 @@ pub(crate) const PRIORITY_TIMER_INTERVAL: Duration = Duration::from_millis(250);
 
 struct SyncProtocolHandler {
 	/// Shared blockchain client.
-	chain: Arc<BlockChainClient>,
+	chain: Arc<BlockChainClient<StateBackend = StateDB>>,
 	/// Shared snapshot service.
 	snapshot_service: Arc<SnapshotService>,
 	/// Sync strategy
@@ -591,7 +592,7 @@ impl ChainNotify for EthSync {
 
 /// PIP event handler.
 /// Simply queues transactions from light client peers.
-struct TxRelay(Arc<BlockChainClient>);
+struct TxRelay(Arc<BlockChainClient<StateBackend = StateDB>>);
 
 impl LightHandler for TxRelay {
 	fn on_transactions(&self, ctx: &EventContext, relay: &[::transaction::UnverifiedTransaction]) {

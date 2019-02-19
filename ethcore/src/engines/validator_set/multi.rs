@@ -25,17 +25,18 @@ use ids::BlockId;
 use header::{BlockNumber, Header};
 use client::EngineClient;
 use machine::{AuxiliaryData, Call, EthereumMachine};
+use state::backend::Backend;
 use super::{SystemCall, ValidatorSet};
 
 type BlockNumberLookup = Box<Fn(BlockId) -> Result<BlockNumber, String> + Send + Sync + 'static>;
 
-pub struct Multi {
-	sets: BTreeMap<BlockNumber, Box<ValidatorSet>>,
+pub struct Multi<B: Backend + Clone> {
+	sets: BTreeMap<BlockNumber, Box<ValidatorSet<MachineStateBackend = B>>>,
 	block_number: RwLock<BlockNumberLookup>,
 }
 
-impl Multi {
-	pub fn new(set_map: BTreeMap<BlockNumber, Box<ValidatorSet>>) -> Self {
+impl<B: Backend + Clone> Multi<B> {
+	pub fn new(set_map: BTreeMap<BlockNumber, Box<ValidatorSet<MachineStateBackend = B>>>) -> Self {
 		assert!(set_map.get(&0u64).is_some(), "ValidatorSet has to be specified from block 0.");
 		Multi {
 			sets: set_map,
@@ -43,7 +44,7 @@ impl Multi {
 		}
 	}
 
-	fn correct_set(&self, id: BlockId) -> Option<&ValidatorSet> {
+	fn correct_set(&self, id: BlockId) -> Option<&ValidatorSet<MachineStateBackend = B>> {
 		match self.block_number.read()(id).map(|parent_block| self.correct_set_by_number(parent_block)) {
 			Ok((_, set)) => Some(set),
 			Err(e) => {
@@ -55,7 +56,7 @@ impl Multi {
 
 	// get correct set by block number, along with block number at which
 	// this set was activated.
-	fn correct_set_by_number(&self, parent_block: BlockNumber) -> (BlockNumber, &ValidatorSet) {
+	fn correct_set_by_number(&self, parent_block: BlockNumber) -> (BlockNumber, &ValidatorSet<MachineStateBackend = B>) {
 		let (block, set) = self.sets.iter()
 			.rev()
 			.find(|&(block, _)| *block <= parent_block + 1)
@@ -68,7 +69,9 @@ impl Multi {
 	}
 }
 
-impl ValidatorSet for Multi {
+impl<B: Backend + Clone + 'static> ValidatorSet for Multi<B> {
+	type MachineStateBackend = B;
+
 	fn default_caller(&self, block_id: BlockId) -> Box<Call> {
 		self.correct_set(block_id).map(|set| set.default_caller(block_id))
 			.unwrap_or(Box::new(|_, _| Err("No validator set for given ID.".into())))
@@ -93,7 +96,7 @@ impl ValidatorSet for Multi {
 	}
 
 	fn signals_epoch_end(&self, _first: bool, header: &Header, aux: AuxiliaryData)
-		-> ::engines::EpochChange<EthereumMachine>
+		-> ::engines::EpochChange<EthereumMachine<B>>
 	{
 		let (set_block, set) = self.correct_set_by_number(header.number());
 		let first = set_block == header.number();
@@ -101,7 +104,7 @@ impl ValidatorSet for Multi {
 		set.signals_epoch_end(first, header, aux)
 	}
 
-	fn epoch_set(&self, _first: bool, machine: &EthereumMachine, number: BlockNumber, proof: &[u8]) -> Result<(super::SimpleList, Option<H256>), ::error::Error> {
+	fn epoch_set(&self, _first: bool, machine: &EthereumMachine<B>, number: BlockNumber, proof: &[u8]) -> Result<(super::SimpleList<B>, Option<H256>), ::error::Error> {
 		let (set_block, set) = self.correct_set_by_number(number);
 		let first = set_block == number;
 
@@ -131,7 +134,7 @@ impl ValidatorSet for Multi {
 		self.correct_set_by_number(set_block).1.report_benign(validator, set_block, block);
 	}
 
-	fn register_client(&self, client: Weak<EngineClient>) {
+	fn register_client(&self, client: Weak<EngineClient<StateBackend = B>>) {
 		for set in self.sets.values() {
 			set.register_client(client.clone());
 		}
@@ -155,6 +158,7 @@ mod tests {
 	use header::Header;
 	use miner::MinerService;
 	use spec::Spec;
+	use state_db::StateDB;
 	use test_helpers::{generate_dummy_client_with_spec_and_accounts, generate_dummy_client_with_spec_and_data};
 	use types::ids::BlockId;
 	use ethereum_types::Address;
@@ -209,7 +213,7 @@ mod tests {
 	fn transition_to_fixed_list_instant() {
 		use super::super::SimpleList;
 
-		let mut map: BTreeMap<_, Box<ValidatorSet>> = BTreeMap::new();
+		let mut map: BTreeMap<_, Box<ValidatorSet<MachineStateBackend = StateDB>>> = BTreeMap::new();
 		let list1: Vec<_> = (0..10).map(|_| Address::random()).collect();
 		let list2 = {
 			let mut list = list1.clone();

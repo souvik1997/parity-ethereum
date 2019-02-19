@@ -22,6 +22,7 @@ use ethcore::client::{ChainInfo, ClientIoMessage};
 use ethcore::spec::Spec;
 use ethcore::miner::MinerService;
 use ethcore::account_provider::AccountProvider;
+use ethcore::state_db::StateDB;
 use ethkey::{KeyPair, Secret};
 use transaction::{Action, PendingTransaction, Transaction};
 use super::helpers::*;
@@ -47,8 +48,8 @@ fn authority_round() {
 	ap.insert_account(s0.secret().clone(), &"".into()).unwrap();
 	ap.insert_account(s1.secret().clone(), &"".into()).unwrap();
 
-	let chain_id = Spec::new_test_round().chain_id();
-	let mut net = TestNet::with_spec_and_accounts(2, SyncConfig::default(), Spec::new_test_round, Some(ap));
+	let chain_id = Spec::<StateDB>::new_test_round().chain_id();
+	let mut net = TestNet::with_spec_and_accounts(2, SyncConfig::default(), Spec::<StateDB>::new_test_round, Some(ap));
 	let io_handler0: Arc<IoHandler<ClientIoMessage>> = Arc::new(TestIoHandler::new(net.peer(0).chain.clone()));
 	let io_handler1: Arc<IoHandler<ClientIoMessage>> = Arc::new(TestIoHandler::new(net.peer(1).chain.clone()));
 	// Push transaction to both clients. Only one of them gets lucky to produce a block.
@@ -134,8 +135,8 @@ fn tendermint() {
 	ap.insert_account(s0.secret().clone(), &"".into()).unwrap();
 	ap.insert_account(s1.secret().clone(), &"".into()).unwrap();
 
-	let chain_id = Spec::new_test_tendermint().chain_id();
-	let mut net = TestNet::with_spec_and_accounts(2, SyncConfig::default(), Spec::new_test_tendermint, Some(ap));
+	let chain_id = Spec::<StateDB>::new_test_tendermint().chain_id();
+	let mut net = TestNet::with_spec_and_accounts(2, SyncConfig::default(), Spec::<StateDB>::new_test_tendermint, Some(ap));
 	let io_handler0: Arc<IoHandler<ClientIoMessage>> = Arc::new(TestIoHandler::new(net.peer(0).chain.clone()));
 	let io_handler1: Arc<IoHandler<ClientIoMessage>> = Arc::new(TestIoHandler::new(net.peer(1).chain.clone()));
 	// Push transaction to both clients. Only one of them issues a proposal.

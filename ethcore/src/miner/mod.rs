@@ -40,13 +40,14 @@ use block::{Block, SealedBlock};
 use client::{
 	CallContract, RegistryInfo, ScheduleInfo,
 	BlockChain, BlockProducer, SealedBlockImporter, ChainInfo,
-	AccountData, Nonce, ProvingCallContract
+	AccountData, Nonce, ProvingCallContract, ReopenBlock, PrepareOpenBlock, BroadcastProposalBlock, ImportSealedBlock
 };
 use error::Error;
 use header::{BlockNumber, Header};
 use receipt::RichReceipt;
 use transaction::{self, UnverifiedTransaction, SignedTransaction, PendingTransaction};
 use state::StateInfo;
+use state::backend::Backend;
 use ethkey::Password;
 
 /// Provides methods to verify incoming external transactions
@@ -66,12 +67,13 @@ pub trait BlockChainClient: TransactionVerifierClient + BlockProducer + SealedBl
 pub trait MinerService : Send + Sync {
 	/// Type representing chain state
 	type State: StateInfo + 'static;
+	type StateBackend: Backend + Clone;
 
 	// Sealing
 
 	/// Submit `seal` as a valid solution for the header of `pow_hash`.
 	/// Will check the seal, but not actually insert the block into the chain.
-	fn submit_seal(&self, pow_hash: H256, seal: Vec<Bytes>) -> Result<SealedBlock, Error>;
+	fn submit_seal(&self, pow_hash: H256, seal: Vec<Bytes>) -> Result<SealedBlock<Self::StateBackend>, Error>;
 
 	/// Is it currently sealing?
 	fn is_currently_sealing(&self) -> bool;
@@ -79,20 +81,17 @@ pub trait MinerService : Send + Sync {
 	/// Get the sealing work package preparing it if doesn't exist yet.
 	///
 	/// Returns `None` if engine seals internally.
-	fn work_package<C>(&self, chain: &C) -> Option<(H256, BlockNumber, u64, U256)>
-		where C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync;
+	fn work_package<C>(&self, chain: &C) -> Option<(H256, BlockNumber, u64, U256)> where C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync + ReopenBlock<ReopenBlockStateBackend = Self::StateBackend> + PrepareOpenBlock<PrepareOpenBlockStateBackend = Self::StateBackend> + ImportSealedBlock<ImportSealedBlockStateBackend = Self::StateBackend>;
 
 	/// Update current pending block
-	fn update_sealing<C>(&self, chain: &C)
-		where C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync;
+	fn update_sealing<C>(&self, chain: &C) where C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync + ReopenBlock<ReopenBlockStateBackend = Self::StateBackend> + PrepareOpenBlock<PrepareOpenBlockStateBackend = Self::StateBackend> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = Self::StateBackend> + ImportSealedBlock<ImportSealedBlockStateBackend = Self::StateBackend>;
 
 	// Notifications
 
 	/// Called when blocks are imported to chain, updates transactions queue.
 	/// `is_internal_import` indicates that the block has just been created in miner and internally sealed by the engine,
 	/// so we shouldn't attempt creating new block again.
-	fn chain_new_blocks<C>(&self, chain: &C, imported: &[H256], invalid: &[H256], enacted: &[H256], retracted: &[H256], is_internal_import: bool)
-		where C: BlockChainClient;
+	fn chain_new_blocks<C>(&self, chain: &C, imported: &[H256], invalid: &[H256], enacted: &[H256], retracted: &[H256], is_internal_import: bool) where C: BlockChainClient + ReopenBlock<ReopenBlockStateBackend = Self::StateBackend> + PrepareOpenBlock<PrepareOpenBlockStateBackend = Self::StateBackend> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = Self::StateBackend>+ ImportSealedBlock<ImportSealedBlockStateBackend = Self::StateBackend>;
 
 	// Pending block
 
@@ -136,20 +135,14 @@ pub trait MinerService : Send + Sync {
 	// Transaction Pool
 
 	/// Imports transactions to transaction queue.
-	fn import_external_transactions<C>(&self, client: &C, transactions: Vec<UnverifiedTransaction>)
-		-> Vec<Result<(), transaction::Error>>
-		where C: BlockChainClient;
+	fn import_external_transactions<C>(&self, client: &C, transactions: Vec<UnverifiedTransaction>) -> Vec<Result<(), transaction::Error>> where C: BlockChainClient + ReopenBlock<ReopenBlockStateBackend = Self::StateBackend> + PrepareOpenBlock<PrepareOpenBlockStateBackend = Self::StateBackend> + ImportSealedBlock<ImportSealedBlockStateBackend = Self::StateBackend> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = Self::StateBackend>;
 
 	/// Imports own (node owner) transaction to queue.
-	fn import_own_transaction<C>(&self, chain: &C, transaction: PendingTransaction)
-		-> Result<(), transaction::Error>
-		where C: BlockChainClient;
+	fn import_own_transaction<C>(&self, chain: &C, transaction: PendingTransaction) -> Result<(), transaction::Error> where C: BlockChainClient + ReopenBlock<ReopenBlockStateBackend = Self::StateBackend> + PrepareOpenBlock<PrepareOpenBlockStateBackend = Self::StateBackend> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = Self::StateBackend> + ImportSealedBlock<ImportSealedBlockStateBackend = Self::StateBackend>;
 
 	/// Imports transactions from potentially external sources, with behaviour determined
 	/// by the config flag `tx_queue_allow_unfamiliar_locals`
-	fn import_claimed_local_transaction<C>(&self, chain: &C, transaction: PendingTransaction, trusted: bool)
-		-> Result<(), transaction::Error>
-		where C: BlockChainClient;
+	fn import_claimed_local_transaction<C>(&self, chain: &C, transaction: PendingTransaction, trusted: bool) -> Result<(), transaction::Error> where C: BlockChainClient + ReopenBlock<ReopenBlockStateBackend = Self::StateBackend> + PrepareOpenBlock<PrepareOpenBlockStateBackend = Self::StateBackend> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = Self::StateBackend> + ImportSealedBlock<ImportSealedBlockStateBackend = Self::StateBackend>;
 
 	/// Removes transaction from the pool.
 	///

@@ -376,11 +376,11 @@ impl<'a, T: AsRef<Path>> From<&'a T> for SpecParams<'a> {
 
 /// Parameters for a block chain; includes both those intrinsic to the design of the
 /// chain and those to be interpreted by the active chain engine.
-pub struct Spec {
+pub struct Spec<B: Backend + Clone> {
 	/// User friendly spec name
 	pub name: String,
 	/// What engine are we using for this?
-	pub engine: Arc<EthEngine>,
+	pub engine: Arc<EthEngine<B>>,
 	/// Name of the subdir inside the main data dir to use for chain data and settings.
 	pub data_dir: String,
 
@@ -422,8 +422,8 @@ pub struct Spec {
 }
 
 #[cfg(test)]
-impl Clone for Spec {
-	fn clone(&self) -> Spec {
+impl<B: Backend + Clone> Clone for Spec<B> {
+	fn clone(&self) -> Self {
 		Spec {
 			name: self.name.clone(),
 			engine: self.engine.clone(),
@@ -486,7 +486,7 @@ impl From<SpecHardcodedSync> for ethjson::spec::HardcodedSync {
 	}
 }
 
-fn load_machine_from(s: ethjson::spec::Spec) -> EthereumMachine {
+fn load_machine_from<B: Backend + Clone + 'static>(s: ethjson::spec::Spec) -> EthereumMachine<B> {
 	let builtins = s.accounts.builtins().into_iter().map(|p| (p.0.into(), From::from(p.1))).collect();
 	let params = CommonParams::from(s.params);
 
@@ -494,7 +494,7 @@ fn load_machine_from(s: ethjson::spec::Spec) -> EthereumMachine {
 }
 
 /// Load from JSON object.
-fn load_from(spec_params: SpecParams, s: ethjson::spec::Spec) -> Result<Spec, Error> {
+fn load_from<B: Backend + Clone + 'static>(spec_params: SpecParams, s: ethjson::spec::Spec) -> Result<Spec<B>, Error> {
 	let builtins = s.accounts
 		.builtins()
 		.into_iter()
@@ -578,13 +578,13 @@ macro_rules! load_machine_bundled {
 	};
 }
 
-impl Spec {
+impl<B: Backend + Clone + 'static> Spec<B> {
 	// create an instance of an Ethereum state machine, minus consensus logic.
 	fn machine(
 		engine_spec: &ethjson::spec::Engine,
 		params: CommonParams,
 		builtins: BTreeMap<Address, Builtin>,
-	) -> EthereumMachine {
+	) -> EthereumMachine<B> {
 		if let ethjson::spec::Engine::Ethash(ref ethash) = *engine_spec {
 			EthereumMachine::with_ethash_extensions(params, builtins, ethash.params.clone().into())
 		} else {
@@ -599,7 +599,7 @@ impl Spec {
 		engine_spec: ethjson::spec::Engine,
 		params: CommonParams,
 		builtins: BTreeMap<Address, Builtin>,
-	) -> Arc<EthEngine> {
+	) -> Arc<EthEngine<B>> {
 		let machine = Self::machine(&engine_spec, params, builtins);
 
 		match engine_spec {
@@ -823,7 +823,7 @@ impl Spec {
 	}
 
 	/// Loads just the state machine from a json file.
-	pub fn load_machine<R: Read>(reader: R) -> Result<EthereumMachine, String> {
+	pub fn load_machine<R: Read>(reader: R) -> Result<EthereumMachine<B>, String> {
 		ethjson::spec::Spec::load(reader)
 			.map_err(fmt_err)
 			.map(load_machine_from)
@@ -903,35 +903,35 @@ impl Spec {
 
 	/// Create a new Spec with InstantSeal consensus which does internal sealing (not requiring
 	/// work).
-	pub fn new_instant() -> Spec {
+	pub fn new_instant() -> Spec<B> {
 		load_bundled!("instant_seal")
 	}
 
 	/// Create a new Spec which conforms to the Frontier-era Morden chain except that it's a
 	/// NullEngine consensus.
 	#[cfg(any(test, feature = "test-helpers"))]
-	pub fn new_test() -> Spec {
+	pub fn new_test() -> Spec<B> {
 		load_bundled!("null_morden")
 	}
 
 	/// Create the EthereumMachine corresponding to Spec::new_test.
 	#[cfg(any(test, feature = "test-helpers"))]
-	pub fn new_test_machine() -> EthereumMachine { load_machine_bundled!("null_morden") }
+	pub fn new_test_machine() -> EthereumMachine<B> { load_machine_bundled!("null_morden") }
 
 	/// Create a new Spec which conforms to the Frontier-era Morden chain except that it's a NullEngine consensus with applying reward on block close.
 	#[cfg(any(test, feature = "test-helpers"))]
-	pub fn new_test_with_reward() -> Spec { load_bundled!("null_morden_with_reward") }
+	pub fn new_test_with_reward() -> Spec<B> { load_bundled!("null_morden_with_reward") }
 
 	/// Create a new Spec which is a NullEngine consensus with a premine of address whose
 	/// secret is keccak('').
 	#[cfg(any(test, feature = "test-helpers"))]
-	pub fn new_null() -> Spec {
+	pub fn new_null() -> Spec<B> {
 		load_bundled!("null")
 	}
 
 	/// Create a new Spec which constructs a contract at address 5 with storage at 0 equal to 1.
 	#[cfg(any(test, feature = "test-helpers"))]
-	pub fn new_test_constructor() -> Spec {
+	pub fn new_test_constructor() -> Spec<B> {
 		load_bundled!("constructor")
 	}
 
@@ -1002,6 +1002,7 @@ impl Spec {
 mod tests {
 	use super::*;
 	use state::State;
+	use state_db::StateDB;
 	use test_helpers::get_temp_state_db;
 	use views::BlockView;
 	use tempdir::TempDir;
@@ -1010,12 +1011,12 @@ mod tests {
 	#[test]
 	fn test_load_empty() {
 		let tempdir = TempDir::new("").unwrap();
-		assert!(Spec::load(&tempdir.path(), &[] as &[u8]).is_err());
+		assert!(Spec::<StateDB>::load(&tempdir.path(), &[] as &[u8]).is_err());
 	}
 
 	#[test]
 	fn test_chain() {
-		let test_spec = Spec::new_test();
+		let test_spec = Spec::<StateDB>::new_test();
 
 		assert_eq!(
 			test_spec.state_root(),
@@ -1031,7 +1032,7 @@ mod tests {
 	#[test]
 	fn genesis_constructor() {
 		::ethcore_logger::init_log();
-		let spec = Spec::new_test_constructor();
+		let spec = Spec::<StateDB>::new_test_constructor();
 		let db = spec.ensure_db_good(get_temp_state_db(), &Default::default())
 			.unwrap();
 		let state = State::from_existing(

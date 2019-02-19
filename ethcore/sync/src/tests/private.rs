@@ -26,13 +26,14 @@ use ethcore::executive::{contract_address};
 use ethcore::test_helpers::{push_block_with_transactions};
 use ethcore_private_tx::{Provider, ProviderConfig, NoopEncryptor, Importer, SignedPrivateTransaction};
 use ethcore::account_provider::AccountProvider;
+use ethcore::state_db::StateDB;
 use ethkey::{KeyPair};
 use tests::helpers::{TestNet, TestIoHandler};
 use rustc_hex::FromHex;
 use rlp::Rlp;
 use SyncConfig;
 
-fn seal_spec() -> Spec {
+fn seal_spec() -> Spec<StateDB> {
 	let spec_data = include_str!("../res/private_spec.json");
 	Spec::load(&::std::env::temp_dir(), spec_data.as_bytes()).unwrap()
 }

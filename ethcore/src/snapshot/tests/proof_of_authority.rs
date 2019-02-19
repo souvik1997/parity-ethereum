@@ -25,6 +25,7 @@ use client::{Client, BlockChainClient, ChainInfo};
 use ethkey::Secret;
 use snapshot::tests::helpers as snapshot_helpers;
 use spec::Spec;
+use state_db::StateDB;
 use test_helpers::generate_dummy_client_with_spec_and_accounts;
 use transaction::{Transaction, Action, SignedTransaction};
 use tempdir::TempDir;
@@ -57,7 +58,7 @@ lazy_static! {
 /// Transitions to the contract at block 2, initially same validator set.
 /// Create a new Spec with AuthorityRound which uses a contract at address 5 to determine the current validators using `getValidators`.
 /// `test_validator_set::ValidatorSet` provides a native wrapper for the ABi.
-fn spec_fixed_to_contract() -> Spec {
+fn spec_fixed_to_contract() -> Spec<StateDB> {
 	let data = include_bytes!("test_validator_contract.json");
 	let tempdir = TempDir::new("").unwrap();
 	Spec::load(&tempdir.path(), &data[..]).unwrap()

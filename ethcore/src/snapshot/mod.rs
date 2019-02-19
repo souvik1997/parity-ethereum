@@ -42,6 +42,7 @@ use kvdb::{KeyValueDB, DBValue};
 use trie::{Trie, TrieMut};
 use ethtrie::{TrieDB, TrieDBMut};
 use rlp::{RlpStream, Rlp};
+use state::backend::Backend;
 use bloom_journal::Bloom;
 use num_cpus;
 
@@ -147,13 +148,13 @@ impl Progress {
 
 }
 /// Take a snapshot using the given blockchain, starting block hash, and database, writing into the given writer.
-pub fn take_snapshot<W: SnapshotWriter + Send>(
-	engine: &EthEngine,
-	chain: &BlockChain,
+pub fn take_snapshot<'a, W: SnapshotWriter + Send, B: Backend + Clone + 'static>(
+	engine: &'a EthEngine<B>,
+	chain: &'a BlockChain,
 	block_at: H256,
-	state_db: &HashDB<KeccakHasher, DBValue>,
+	state_db: &'a HashDB<KeccakHasher, DBValue>,
 	writer: W,
-	p: &Progress,
+	p: &'a Progress,
 	processing_threads: usize,
 ) -> Result<(), Error> {
 	let start_header = chain.block_header_data(&block_at)
@@ -228,7 +229,7 @@ pub fn take_snapshot<W: SnapshotWriter + Send>(
 /// Secondary chunks are engine-specific, but they intend to corroborate the state data
 /// in the state chunks.
 /// Returns a list of chunk hashes, with the first having the blocks furthest from the genesis.
-pub fn chunk_secondary<'a>(mut chunker: Box<SnapshotComponents>, chain: &'a BlockChain, start_hash: H256, writer: &Mutex<SnapshotWriter + 'a>, progress: &'a Progress) -> Result<Vec<H256>, Error> {
+pub fn chunk_secondary<'a, B: Backend + Clone>(mut chunker: Box<SnapshotComponents<StateBackend = B>>, chain: &'a BlockChain, start_hash: H256, writer: &Mutex<SnapshotWriter + 'a>, progress: &'a Progress) -> Result<Vec<H256>, Error> {
 	let mut chunk_hashes = Vec::new();
 	let mut snappy_buffer = vec![0; snappy::max_compressed_len(PREFERRED_CHUNK_SIZE)];
 
@@ -560,7 +561,7 @@ const POW_VERIFY_RATE: f32 = 0.02;
 /// Verify an old block with the given header, engine, blockchain, body. If `always` is set, it will perform
 /// the fullest verification possible. If not, it will take a random sample to determine whether it will
 /// do heavy or light verification.
-pub fn verify_old_block(rng: &mut OsRng, header: &Header, engine: &EthEngine, chain: &BlockChain, always: bool) -> Result<(), ::error::Error> {
+pub fn verify_old_block<B: Backend + Clone + 'static>(rng: &mut OsRng, header: &Header, engine: &EthEngine<B>, chain: &BlockChain, always: bool) -> Result<(), ::error::Error> {
 	engine.verify_block_basic(header)?;
 
 	if always || rng.gen::<f32>() <= POW_VERIFY_RATE {

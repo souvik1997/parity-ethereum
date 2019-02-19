@@ -28,6 +28,7 @@ use parking_lot::{Condvar, Mutex, RwLock};
 use io::*;
 use error::{BlockError, ImportErrorKind, ErrorKind, Error};
 use engines::EthEngine;
+use state::backend::Backend;
 use client::ClientIoMessage;
 
 use self::kind::{BlockLike, Kind};
@@ -40,10 +41,10 @@ const MIN_MEM_LIMIT: usize = 16384;
 const MIN_QUEUE_LIMIT: usize = 512;
 
 /// Type alias for block queue convenience.
-pub type BlockQueue = VerificationQueue<self::kind::Blocks>;
+pub type BlockQueue<B> = VerificationQueue<self::kind::Blocks, B>;
 
 /// Type alias for header queue convenience.
-pub type HeaderQueue = VerificationQueue<self::kind::Headers>;
+pub type HeaderQueue<B> = VerificationQueue<self::kind::Headers, B>;
 
 /// Verification queue configuration
 #[derive(Debug, PartialEq, Clone)]
@@ -136,8 +137,8 @@ struct Sizes {
 
 /// A queue of items to be verified. Sits between network or other I/O and the `BlockChain`.
 /// Keeps them in the same order as inserted, minus invalid items.
-pub struct VerificationQueue<K: Kind> {
-	engine: Arc<EthEngine>,
+pub struct VerificationQueue<K: Kind, B: Backend + Clone + 'static> {
+	engine: Arc<EthEngine<B>>,
 	more_to_verify: Arc<Condvar>,
 	verification: Arc<Verification<K>>,
 	deleting: Arc<AtomicBool>,
@@ -203,9 +204,9 @@ struct Verification<K: Kind> {
 	check_seal: bool,
 }
 
-impl<K: Kind> VerificationQueue<K> {
+impl<K: Kind, B: Backend + Clone + 'static> VerificationQueue<K, B> {
 	/// Creates a new queue instance.
-	pub fn new(config: Config, engine: Arc<EthEngine>, message_channel: IoChannel<ClientIoMessage>, check_seal: bool) -> Self {
+	pub fn new(config: Config, engine: Arc<EthEngine<B>>, message_channel: IoChannel<ClientIoMessage>, check_seal: bool) -> Self {
 		let verification = Arc::new(Verification {
 			unverified: Mutex::new(VecDeque::new()),
 			verifying: Mutex::new(VecDeque::new()),
@@ -292,7 +293,7 @@ impl<K: Kind> VerificationQueue<K> {
 
 	fn verify(
 		verification: Arc<Verification<K>>,
-		engine: Arc<EthEngine>,
+		engine: Arc<EthEngine<B>>,
 		wait: Arc<Condvar>,
 		ready: Arc<QueueSignal>,
 		empty: Arc<Condvar>,
@@ -376,7 +377,7 @@ impl<K: Kind> VerificationQueue<K> {
 						// we're next!
 						let mut verified = verification.verified.lock();
 						let mut bad = verification.bad.lock();
-						VerificationQueue::drain_verifying(&mut verifying, &mut verified, &mut bad, &verification.sizes);
+						VerificationQueue::<K,B>::drain_verifying(&mut verifying, &mut verified, &mut bad, &verification.sizes);
 						true
 					} else {
 						false
@@ -391,7 +392,7 @@ impl<K: Kind> VerificationQueue<K> {
 					verifying.retain(|e| e.hash != hash);
 
 					if verifying.front().map_or(false, |x| x.output.is_some()) {
-						VerificationQueue::drain_verifying(&mut verifying, &mut verified, &mut bad, &verification.sizes);
+						VerificationQueue::<K,B>::drain_verifying(&mut verifying, &mut verified, &mut bad, &verification.sizes);
 						true
 					} else {
 						false
@@ -618,8 +619,8 @@ impl<K: Kind> VerificationQueue<K> {
 			max_queue_size: self.max_queue_size,
 			max_mem_use: self.max_mem_use,
 			mem_used: unverified_bytes
-					   + verifying_bytes
-					   + verified_bytes
+						 + verifying_bytes
+						 + verified_bytes
 		}
 	}
 
@@ -707,7 +708,7 @@ impl<K: Kind> VerificationQueue<K> {
 	}
 }
 
-impl<K: Kind> Drop for VerificationQueue<K> {
+impl<K: Kind, B: Backend + Clone + 'static> Drop for VerificationQueue<K, B> {
 	fn drop(&mut self) {
 		trace!(target: "shutdown", "[VerificationQueue] Closing...");
 		self.clear();
@@ -740,13 +741,14 @@ mod tests {
 	use super::{BlockQueue, Config, State};
 	use super::kind::blocks::Unverified;
 	use test_helpers::{get_good_dummy_block_seq, get_good_dummy_block};
+	use state_db::StateDB;
 	use error::*;
 	use views::BlockView;
 	use bytes::Bytes;
 
 	// create a test block queue.
 	// auto_scaling enables verifier adjustment.
-	fn get_test_queue(auto_scale: bool) -> BlockQueue {
+	fn get_test_queue(auto_scale: bool) -> BlockQueue<StateDB> {
 		let spec = Spec::new_test();
 		let engine = spec.engine;
 
@@ -769,7 +771,7 @@ mod tests {
 	#[test]
 	fn can_be_created() {
 		// TODO better test
-		let spec = Spec::new_test();
+		let spec = Spec::<StateDB>::new_test();
 		let engine = spec.engine;
 		let _ = BlockQueue::new(Config::default(), engine, IoChannel::disconnected(), true);
 	}
@@ -847,7 +849,7 @@ mod tests {
 
 	#[test]
 	fn test_mem_limit() {
-		let spec = Spec::new_test();
+		let spec = Spec::<StateDB>::new_test();
 		let engine = spec.engine;
 		let mut config = Config::default();
 		config.max_mem_use = super::MIN_MEM_LIMIT;  // empty queue uses about 15000
@@ -898,7 +900,7 @@ mod tests {
 
 		#[test]
 		fn worker_threads_honor_specified_number_without_scaling() {
-			let spec = Spec::new_test();
+			let spec = Spec::<StateDB>::new_test();
 			let engine = spec.engine;
 			let config = get_test_config(1, false);
 			let queue = BlockQueue::new(config, engine, IoChannel::disconnected(), true);
@@ -908,7 +910,7 @@ mod tests {
 
 		#[test]
 		fn worker_threads_specified_to_zero_should_set_to_one() {
-			let spec = Spec::new_test();
+			let spec = Spec::<StateDB>::new_test();
 			let engine = spec.engine;
 			let config = get_test_config(0, false);
 			let queue = BlockQueue::new(config, engine, IoChannel::disconnected(), true);
@@ -918,7 +920,7 @@ mod tests {
 
 		#[test]
 		fn worker_threads_should_only_accept_max_number_cpus() {
-			let spec = Spec::new_test();
+			let spec = Spec::<StateDB>::new_test();
 			let engine = spec.engine;
 			let config = get_test_config(10_000, false);
 			let queue = BlockQueue::new(config, engine, IoChannel::disconnected(), true);
@@ -932,7 +934,7 @@ mod tests {
 			let num_cpus = ::num_cpus::get();
 			// only run the test with at least 2 CPUs
 			if num_cpus > 1 {
-				let spec = Spec::new_test();
+				let spec = Spec::<StateDB>::new_test();
 				let engine = spec.engine;
 				let config = get_test_config(num_cpus - 1, true);
 				let queue = BlockQueue::new(config, engine, IoChannel::disconnected(), true);

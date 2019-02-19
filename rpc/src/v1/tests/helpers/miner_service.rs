@@ -29,6 +29,7 @@ use ethcore::header::{BlockNumber, Header};
 use ethcore::ids::BlockId;
 use ethcore::miner::{self, MinerService, AuthoringParams};
 use ethcore::receipt::RichReceipt;
+use ethcore::state_db::StateDB;
 use ethereum_types::{H256, U256, Address};
 use miner::pool::local_transactions::Status as LocalTransactionStatus;
 use miner::pool::{verifier, VerifiedTransaction, QueueStatus};
@@ -96,13 +97,16 @@ impl StateClient for TestMinerService {
 }
 
 impl EngineInfo for TestMinerService {
-	fn engine(&self) -> &EthEngine {
+	type EngineStateBackend = StateDB;
+
+	fn engine(&self) -> &EthEngine<StateDB> {
 		unimplemented!()
 	}
 }
 
 impl MinerService for TestMinerService {
 	type State = ();
+	type StateBackend = StateDB;
 
 	fn pending_state(&self, _latest_block_number: BlockNumber) -> Option<Self::State> {
 		None
@@ -187,7 +191,7 @@ impl MinerService for TestMinerService {
 		unimplemented!();
 	}
 
-	fn work_package<C: PrepareOpenBlock>(&self, chain: &C) -> Option<(H256, BlockNumber, u64, U256)> {
+	fn work_package<C: PrepareOpenBlock>(&self, chain: &C) -> Option<(H256, BlockNumber, u64, U256)> where C::PrepareOpenBlockStateBackend: 'static {
 		let params = self.authoring_params();
 		let open_block = chain.prepare_open_block(params.author, params.gas_range_target, params.extra_data).unwrap();
 		let closed = open_block.close().unwrap();
@@ -269,7 +273,7 @@ impl MinerService for TestMinerService {
 
 	/// Submit `seal` as a valid solution for the header of `pow_hash`.
 	/// Will check the seal, but not actually insert the block into the chain.
-	fn submit_seal(&self, _pow_hash: H256, _seal: Vec<Bytes>) -> Result<SealedBlock, Error> {
+	fn submit_seal(&self, _pow_hash: H256, _seal: Vec<Bytes>) -> Result<SealedBlock<StateDB>, Error> {
 		unimplemented!();
 	}
 

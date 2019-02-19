@@ -20,6 +20,7 @@ use bytes::Bytes;
 use ethcore::client::BlockChainClient;
 use ethcore::header::BlockNumber;
 use ethcore::snapshot::SnapshotService;
+use ethcore::state_db::StateDB;
 use parking_lot::RwLock;
 
 /// IO interface for the syncing handler.
@@ -37,7 +38,7 @@ pub trait SyncIo {
 	/// Send a packet to a peer using specified protocol.
 	fn send_protocol(&mut self, protocol: ProtocolId, peer_id: PeerId, packet_id: PacketId, data: Vec<u8>) -> Result<(), Error>;
 	/// Get the blockchain
-	fn chain(&self) -> &BlockChainClient;
+	fn chain(&self) -> &BlockChainClient<StateBackend = StateDB>;
 	/// Get the snapshot service.
 	fn snapshot_service(&self) -> &SnapshotService;
 	/// Returns peer identifier string
@@ -63,7 +64,7 @@ pub trait SyncIo {
 /// Wraps `NetworkContext` and the blockchain client
 pub struct NetSyncIo<'s> {
 	network: &'s NetworkContext,
-	chain: &'s BlockChainClient,
+	chain: &'s BlockChainClient<StateBackend = StateDB>,
 	snapshot_service: &'s SnapshotService,
 	chain_overlay: &'s RwLock<HashMap<BlockNumber, Bytes>>,
 }
@@ -71,7 +72,7 @@ pub struct NetSyncIo<'s> {
 impl<'s> NetSyncIo<'s> {
 	/// Creates a new instance from the `NetworkContext` and the blockchain client reference.
 	pub fn new(network: &'s NetworkContext,
-		chain: &'s BlockChainClient,
+		chain: &'s BlockChainClient<StateBackend = StateDB>,
 		snapshot_service: &'s SnapshotService,
 		chain_overlay: &'s RwLock<HashMap<BlockNumber, Bytes>>) -> NetSyncIo<'s> {
 		NetSyncIo {
@@ -104,7 +105,7 @@ impl<'s> SyncIo for NetSyncIo<'s> {
 		self.network.send_protocol(protocol, peer_id, packet_id, data)
 	}
 
-	fn chain(&self) -> &BlockChainClient {
+	fn chain(&self) -> &BlockChainClient<StateBackend = StateDB> {
 		self.chain
 	}
 

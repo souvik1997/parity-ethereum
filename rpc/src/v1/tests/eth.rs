@@ -28,6 +28,7 @@ use ethcore::spec::{Genesis, Spec};
 use ethcore::test_helpers;
 use ethcore::verification::queue::kind::blocks::Unverified;
 use ethcore::verification::VerifierType;
+use ethcore::state_db::StateDB;
 use ethjson::blockchain::BlockChain;
 use ethjson::spec::ForkSpec;
 use io::IoChannel;
@@ -56,7 +57,7 @@ fn sync_provider() -> Arc<TestSyncProvider> {
 	}))
 }
 
-fn miner_service(spec: &Spec, accounts: Arc<AccountProvider>) -> Arc<Miner> {
+fn miner_service(spec: &Spec<StateDB>, accounts: Arc<AccountProvider>) -> Arc<Miner<StateDB>> {
 	Arc::new(Miner::new_for_tests(spec, Some(accounts)))
 }
 
@@ -64,7 +65,7 @@ fn snapshot_service() -> Arc<TestSnapshotService> {
 	Arc::new(TestSnapshotService::new())
 }
 
-fn make_spec(chain: &BlockChain) -> Spec {
+fn make_spec(chain: &BlockChain) -> Spec<StateDB> {
 	let genesis = Genesis::from(chain.genesis());
 	let mut spec = ethereum::new_frontier_test();
 	let state = chain.pre_state.clone().into();
@@ -77,7 +78,7 @@ fn make_spec(chain: &BlockChain) -> Spec {
 struct EthTester {
 	_runtime: Runtime,
 	client: Arc<Client>,
-	_miner: Arc<Miner>,
+	_miner: Arc<Miner<StateDB>>,
 	_snapshot: Arc<TestSnapshotService>,
 	accounts: Arc<AccountProvider>,
 	handler: IoHandler<Metadata>,
@@ -110,12 +111,12 @@ impl EthTester {
 		tester
 	}
 
-	fn from_spec(spec: Spec) -> Self {
+	fn from_spec(spec: Spec<StateDB>) -> Self {
 		let config = ClientConfig::default();
 		Self::from_spec_conf(spec, config)
 	}
 
-	fn from_spec_conf(spec: Spec, config: ClientConfig) -> Self {
+	fn from_spec_conf(spec: Spec<StateDB>, config: ClientConfig) -> Self {
 
 		let runtime = Runtime::with_thread_count(1);
 		let account_provider = account_provider();

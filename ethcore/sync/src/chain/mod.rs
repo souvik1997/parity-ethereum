@@ -36,40 +36,40 @@
 //! Workflow for `ChainHead` state.
 //! In this state we try to get subchain headers with a single `GetBlockHeaders` request.
 //! On `NewPeer` / On `Restart`:
-//! 	If peer's total difficulty is higher and there are less than 5 peers downloading, request N/M headers with interval M+1 starting from l
+//!		If peer's total difficulty is higher and there are less than 5 peers downloading, request N/M headers with interval M+1 starting from l
 //! On `BlockHeaders(R)`:
-//! 	If R is empty:
+//!		If R is empty:
 //! If l is equal to genesis block hash or l is more than 1000 blocks behind our best hash:
 //! Remove current peer from P. set l to the best block in the block chain. Select peer with maximum total difficulty from P and restart.
 //! Else
-//! 	Set l to l’s parent and restart.
+//!		Set l to l’s parent and restart.
 //! Else if we already have all the headers in the block chain or the block queue:
-//! 	Set s to `Idle`,
+//!		Set s to `Idle`,
 //! Else
-//! 	Set S to R, set s to `Blocks`.
+//!		Set S to R, set s to `Blocks`.
 //!
 //! All other messages are ignored.
 //!
 //! Workflow for `Blocks` state.
 //! In this state we download block headers and bodies from multiple peers.
 //! On `NewPeer` / On `Restart`:
-//! 	For all idle peers:
+//!		For all idle peers:
 //! Find a set of 256 or less block hashes in H which are not in B and not being downloaded by other peers. If the set is not empty:
-//!  	Request block bodies for the hashes in the set.
+//!		Request block bodies for the hashes in the set.
 //! Else
-//! 	Find an element in S which is  not being downloaded by other peers. If found: Request M headers starting from the element.
+//!		Find an element in S which is  not being downloaded by other peers. If found: Request M headers starting from the element.
 //!
 //! On `BlockHeaders(R)`:
 //! If R is empty remove current peer from P and restart.
-//! 	Validate received headers:
-//! 		For each header find a parent in H or R or the blockchain. Restart if there is a block with unknown parent.
-//! 		Find at least one header from the received list in S. Restart if there is none.
+//!		Validate received headers:
+//!			For each header find a parent in H or R or the blockchain. Restart if there is a block with unknown parent.
+//!			Find at least one header from the received list in S. Restart if there is none.
 //! Go to `CollectBlocks`.
 //!
 //! On `BlockBodies(R)`:
 //! If R is empty remove current peer from P and restart.
-//! 	Add bodies with a matching header in H to B.
-//! 	Go to `CollectBlocks`.
+//!		Add bodies with a matching header in H to B.
+//!		Go to `CollectBlocks`.
 //!
 //! `CollectBlocks`:
 //! Find a chain of blocks C in H starting from h where h’s parent equals to l. The chain ends with the first block which does not have a body in B.
@@ -81,9 +81,9 @@
 //! All other messages are ignored.
 //! Workflow for Idle state.
 //! On `NewBlock`:
-//! 	Import the block. If the block is unknown set s to `ChainHead` and restart.
+//!		Import the block. If the block is unknown set s to `ChainHead` and restart.
 //! On `NewHashes`:
-//! 	Set s to `ChainHead` and restart.
+//!		Set s to `ChainHead` and restart.
 //!
 //! All other messages are ignored.
 
@@ -107,6 +107,7 @@ use network::{self, PeerId, PacketId};
 use ethcore::header::{BlockNumber};
 use ethcore::client::{BlockChainClient, BlockStatus, BlockId, BlockChainInfo, BlockQueueInfo};
 use ethcore::snapshot::{RestorationStatus};
+use ethcore::state_db::StateDB;
 use sync_io::SyncIo;
 use super::{WarpSync, SyncConfig};
 use block_sync::{BlockDownloader, DownloadAction};
@@ -394,7 +395,7 @@ impl ChainSyncApi {
 	/// Creates new `ChainSyncApi`
 	pub fn new(
 		config: SyncConfig,
-		chain: &BlockChainClient,
+		chain: &BlockChainClient<StateBackend = StateDB>,
 		private_tx_handler: Arc<PrivateTxHandler>,
 		priority_tasks: mpsc::Receiver<PriorityTask>,
 	) -> Self {
@@ -511,7 +512,7 @@ impl ChainSyncApi {
 // Static methods
 impl ChainSync {
 	/// creates rlp to send for the tree defined by 'from' and 'to' hashes
-	fn create_new_hashes_rlp(chain: &BlockChainClient, from: &H256, to: &H256) -> Option<Bytes> {
+	fn create_new_hashes_rlp(chain: &BlockChainClient<StateBackend = StateDB>, from: &H256, to: &H256) -> Option<Bytes> {
 		match chain.tree_route(from, to) {
 			Some(route) => {
 				let uncles = chain.find_uncles(from).unwrap_or_else(Vec::new);
@@ -546,7 +547,7 @@ impl ChainSync {
 	}
 
 	/// creates latest block rlp for the given client
-	fn create_latest_block_rlp(chain: &BlockChainClient) -> Bytes {
+	fn create_latest_block_rlp(chain: &BlockChainClient<StateBackend = StateDB>) -> Bytes {
 		Self::create_block_rlp(
 			&chain.block(BlockId::Hash(chain.chain_info().best_block_hash))
 				.expect("Best block always exists").into_inner(),
@@ -555,7 +556,7 @@ impl ChainSync {
 	}
 
 	/// creates given hash block rlp for the given client
-	fn create_new_block_rlp(chain: &BlockChainClient, hash: &H256) -> Bytes {
+	fn create_new_block_rlp(chain: &BlockChainClient<StateBackend = StateDB>, hash: &H256) -> Bytes {
 		Self::create_block_rlp(
 			&chain.block(BlockId::Hash(hash.clone())).expect("Block has just been sealed; qed").into_inner(),
 			chain.block_total_difficulty(BlockId::Hash(hash.clone())).expect("Block has just been sealed; qed.")
@@ -573,7 +574,7 @@ impl ChainSync {
 		peers
 	}
 
-	fn get_init_state(warp_sync: WarpSync, chain: &BlockChainClient) -> SyncState {
+	fn get_init_state(warp_sync: WarpSync, chain: &BlockChainClient<StateBackend = StateDB>) -> SyncState {
 		let best_block = chain.chain_info().best_block_number;
 		match warp_sync {
 			WarpSync::Enabled => SyncState::WaitingPeers,
@@ -635,7 +636,7 @@ impl ChainSync {
 	/// Create a new instance of syncing strategy.
 	pub fn new(
 		config: SyncConfig,
-		chain: &BlockChainClient,
+		chain: &BlockChainClient<StateBackend = StateDB>,
 		private_tx_handler: Arc<PrivateTxHandler>,
 	) -> Self {
 		let chain_info = chain.chain_info();
@@ -846,7 +847,7 @@ impl ChainSync {
 	}
 
 	/// Update sync after the blockchain has been changed externally.
-	pub fn update_targets(&mut self, chain: &BlockChainClient) {
+	pub fn update_targets(&mut self, chain: &BlockChainClient<StateBackend = StateDB>) {
 		// Do not assume that the block queue/chain still has our last_imported_block
 		let chain = chain.chain_info();
 		self.new_blocks = BlockDownloader::new(BlockSet::NewBlocks, &chain.best_block_hash, chain.best_block_number);
@@ -1425,7 +1426,7 @@ pub mod tests {
 		assert!(!sync_status(SyncState::Idle).is_syncing(queue_info(0, 0)));
 	}
 
-	pub fn dummy_sync_with_peer(peer_latest_hash: H256, client: &BlockChainClient) -> ChainSync {
+	pub fn dummy_sync_with_peer(peer_latest_hash: H256, client: &BlockChainClient<StateBackend = StateDB>) -> ChainSync {
 		let mut sync = ChainSync::new(SyncConfig::default(), client, Arc::new(NoopPrivateTxHandler));
 		insert_dummy_peer(&mut sync, 0, peer_latest_hash);
 		sync
@@ -1599,4 +1600,3 @@ pub mod tests {
 		assert_eq!(status.status.transaction_count, 0);
 	}
 }
-

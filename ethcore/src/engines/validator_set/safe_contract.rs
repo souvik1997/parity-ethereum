@@ -29,6 +29,7 @@ use memory_cache::MemoryLruCache;
 use parking_lot::RwLock;
 use receipt::Receipt;
 use rlp::{Rlp, RlpStream};
+use state::backend::Backend;
 use std::sync::{Weak, Arc};
 use super::{SystemCall, ValidatorSet};
 use super::simple_list::SimpleList;
@@ -53,12 +54,12 @@ struct StateProof {
 	header: Header,
 }
 
-impl ::engines::StateDependentProof<EthereumMachine> for StateProof {
+impl<B: Backend + Clone + 'static> ::engines::StateDependentProof<EthereumMachine<B>> for StateProof {
 	fn generate_proof(&self, caller: &Call) -> Result<Vec<u8>, String> {
 		prove_initial(self.contract_address, &self.header, caller)
 	}
 
-	fn check_proof(&self, machine: &EthereumMachine, proof: &[u8]) -> Result<(), String> {
+	fn check_proof(&self, machine: &EthereumMachine<B>, proof: &[u8]) -> Result<(), String> {
 		let (header, state_items) = decode_first_proof(&Rlp::new(proof))
 			.map_err(|e| format!("proof incorrectly encoded: {}", e))?;
 		if &header != &self.header {
@@ -70,10 +71,10 @@ impl ::engines::StateDependentProof<EthereumMachine> for StateProof {
 }
 
 /// The validator contract should have the following interface:
-pub struct ValidatorSafeContract {
+pub struct ValidatorSafeContract<B: Backend + Clone> {
 	contract_address: Address,
-	validators: RwLock<MemoryLruCache<H256, SimpleList>>,
-	client: RwLock<Option<Weak<EngineClient>>>, // TODO [keorn]: remove
+	validators: RwLock<MemoryLruCache<H256, SimpleList<B>>>,
+	client: RwLock<Option<Weak<EngineClient<StateBackend = B>>>>, // TODO [keorn]: remove
 }
 
 // first proof is just a state proof call of `getValidators` at header's state.
@@ -88,7 +89,7 @@ fn encode_first_proof(header: &Header, state_items: &[Vec<u8>]) -> Bytes {
 }
 
 // check a first proof: fetch the validator set at the given block.
-fn check_first_proof(machine: &EthereumMachine, contract_address: Address, old_header: Header, state_items: &[DBValue])
+fn check_first_proof<B: Backend + Clone>(machine: &EthereumMachine<B>, contract_address: Address, old_header: Header, state_items: &[DBValue])
 	-> Result<Vec<Address>, String>
 {
 	use transaction::{Action, Transaction};
@@ -188,7 +189,7 @@ fn prove_initial(contract_address: Address, header: &Header, caller: &Call) -> R
 	Ok(proof)
 }
 
-impl ValidatorSafeContract {
+impl<B: Backend + Clone> ValidatorSafeContract<B> {
 	pub fn new(contract_address: Address) -> Self {
 		ValidatorSafeContract {
 			contract_address,
@@ -198,7 +199,7 @@ impl ValidatorSafeContract {
 	}
 
 	/// Queries the state and gets the set of validators.
-	fn get_list(&self, caller: &Call) -> Option<SimpleList> {
+	fn get_list(&self, caller: &Call) -> Option<SimpleList<B>> {
 		let contract_address = self.contract_address;
 
 		let (data, decoder) = validator_set::functions::get_validators::call();
@@ -246,7 +247,7 @@ impl ValidatorSafeContract {
 
 	// check receipts for log event. bloom should be `expected_bloom` for the
 	// header the receipts correspond to.
-	fn extract_from_event(&self, bloom: Bloom, header: &Header, receipts: &[Receipt]) -> Option<SimpleList> {
+	fn extract_from_event(&self, bloom: Bloom, header: &Header, receipts: &[Receipt]) -> Option<SimpleList<B>> {
 		let check_log = |log: &LogEntry| {
 			log.address == self.contract_address &&
 				log.topics.len() == 2 &&
@@ -274,7 +275,9 @@ impl ValidatorSafeContract {
 	}
 }
 
-impl ValidatorSet for ValidatorSafeContract {
+impl<B: Backend + Clone + 'static> ValidatorSet for ValidatorSafeContract<B> {
+	type MachineStateBackend = B;
+
 	fn default_caller(&self, id: BlockId) -> Box<Call> {
 		let client = self.client.read().clone();
 		Box::new(move |addr, data| client.as_ref()
@@ -306,7 +309,7 @@ impl ValidatorSet for ValidatorSafeContract {
 	}
 
 	fn signals_epoch_end(&self, first: bool, header: &Header, aux: AuxiliaryData)
-		-> ::engines::EpochChange<EthereumMachine>
+		-> ::engines::EpochChange<EthereumMachine<B>>
 	{
 		let receipts = aux.receipts;
 
@@ -343,8 +346,8 @@ impl ValidatorSet for ValidatorSafeContract {
 		}
 	}
 
-	fn epoch_set(&self, first: bool, machine: &EthereumMachine, _number: ::header::BlockNumber, proof: &[u8])
-		-> Result<(SimpleList, Option<H256>), ::error::Error>
+	fn epoch_set(&self, first: bool, machine: &EthereumMachine<B>, _number: ::header::BlockNumber, proof: &[u8])
+		-> Result<(SimpleList<B>, Option<H256>), ::error::Error>
 	{
 		let rlp = Rlp::new(proof);
 
@@ -429,7 +432,7 @@ impl ValidatorSet for ValidatorSafeContract {
 				 }))
 	}
 
-	fn register_client(&self, client: Weak<EngineClient>) {
+	fn register_client(&self, client: Weak<EngineClient<StateBackend = B>>) {
 		trace!(target: "engine", "Setting up contract caller.");
 		*self.client.write() = Some(client);
 	}
@@ -443,6 +446,7 @@ mod tests {
 	use ethereum_types::Address;
 	use types::ids::BlockId;
 	use spec::Spec;
+	use state_db::StateDB;
 	use account_provider::AccountProvider;
 	use transaction::{Transaction, Action};
 	use client::{ChainInfo, BlockInfo, ImportBlock};
@@ -455,7 +459,7 @@ mod tests {
 
 	#[test]
 	fn fetches_validators() {
-		let client = generate_dummy_client_with_spec_and_accounts(Spec::new_validator_safe_contract, None);
+		let client = generate_dummy_client_with_spec_and_accounts(Spec::<StateDB>::new_validator_safe_contract, None);
 		let vc = Arc::new(ValidatorSafeContract::new("0000000000000000000000000000000000000005".parse::<Address>().unwrap()));
 		vc.register_client(Arc::downgrade(&client) as _);
 		let last_hash = client.best_block_header().hash();
@@ -469,8 +473,8 @@ mod tests {
 		let s0: Secret = keccak("1").into();
 		let v0 = tap.insert_account(s0.clone(), &"".into()).unwrap();
 		let v1 = tap.insert_account(keccak("0").into(), &"".into()).unwrap();
-		let chain_id = Spec::new_validator_safe_contract().chain_id();
-		let client = generate_dummy_client_with_spec_and_accounts(Spec::new_validator_safe_contract, Some(tap));
+		let chain_id = Spec::<StateDB>::new_validator_safe_contract().chain_id();
+		let client = generate_dummy_client_with_spec_and_accounts(Spec::<StateDB>::new_validator_safe_contract, Some(tap));
 		client.engine().register_client(Arc::downgrade(&client) as _);
 		let validator_contract = "0000000000000000000000000000000000000005".parse::<Address>().unwrap();
 
@@ -521,7 +525,7 @@ mod tests {
 		assert_eq!(client.chain_info().best_block_number, 3);
 
 		// Check syncing.
-		let sync_client = generate_dummy_client_with_spec_and_data(Spec::new_validator_safe_contract, 0, 0, &[]);
+		let sync_client = generate_dummy_client_with_spec_and_data(Spec::<StateDB>::new_validator_safe_contract, 0, 0, &[]);
 		sync_client.engine().register_client(Arc::downgrade(&sync_client) as _);
 		for i in 1..4 {
 			sync_client.import_block(Unverified::from_rlp(client.block(BlockId::Number(i)).unwrap().into_inner()).unwrap()).unwrap();
@@ -537,7 +541,7 @@ mod tests {
 		use machine::AuxiliaryRequest;
 		use log_entry::LogEntry;
 
-		let client = generate_dummy_client_with_spec_and_accounts(Spec::new_validator_safe_contract, None);
+		let client = generate_dummy_client_with_spec_and_accounts(Spec::<StateDB>::new_validator_safe_contract, None);
 		let engine = client.engine().clone();
 		let validator_contract = "0000000000000000000000000000000000000005".parse::<Address>().unwrap();
 
@@ -574,7 +578,7 @@ mod tests {
 		use header::Header;
 		use engines::{EpochChange, Proof};
 
-		let client = generate_dummy_client_with_spec_and_accounts(Spec::new_validator_safe_contract, None);
+		let client = generate_dummy_client_with_spec_and_accounts(Spec::<StateDB>::new_validator_safe_contract, None);
 		let engine = client.engine().clone();
 
 		let mut new_header = Header::default();

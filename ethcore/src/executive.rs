@@ -190,9 +190,9 @@ impl TransactOptions<trace::NoopTracer, trace::NoopVMTracer> {
 }
 
 /// Trap result returned by executive.
-pub type ExecutiveTrapResult<'a, T> = vm::TrapResult<T, CallCreateExecutive<'a>, CallCreateExecutive<'a>>;
+pub type ExecutiveTrapResult<'a, T, B> = vm::TrapResult<T, CallCreateExecutive<'a, B>, CallCreateExecutive<'a, B>>;
 /// Trap error for executive.
-pub type ExecutiveTrapError<'a> = vm::TrapError<CallCreateExecutive<'a>, CallCreateExecutive<'a>>;
+pub type ExecutiveTrapError<'a, B> = vm::TrapError<CallCreateExecutive<'a, B>, CallCreateExecutive<'a, B>>;
 
 enum CallCreateExecutiveKind {
 	Transfer(ActionParams),
@@ -204,9 +204,9 @@ enum CallCreateExecutiveKind {
 }
 
 /// Executive for a raw call/create action.
-pub struct CallCreateExecutive<'a> {
+pub struct CallCreateExecutive<'a, G: StateBackend + Clone> {
 	info: &'a EnvInfo,
-	machine: &'a Machine,
+	machine: &'a Machine<G>,
 	schedule: &'a Schedule,
 	factory: &'a VmFactory,
 	depth: usize,
@@ -217,9 +217,9 @@ pub struct CallCreateExecutive<'a> {
 	kind: CallCreateExecutiveKind,
 }
 
-impl<'a> CallCreateExecutive<'a> {
+impl<'a, H: StateBackend + Clone> CallCreateExecutive<'a, H> {
 	/// Create a new call executive using raw data.
-	pub fn new_call_raw(params: ActionParams, info: &'a EnvInfo, machine: &'a Machine, schedule: &'a Schedule, factory: &'a VmFactory, depth: usize, stack_depth: usize, parent_static_flag: bool) -> Self {
+	pub fn new_call_raw(params: ActionParams, info: &'a EnvInfo, machine: &'a Machine<H>, schedule: &'a Schedule, factory: &'a VmFactory, depth: usize, stack_depth: usize, parent_static_flag: bool) -> Self {
 		trace!("Executive::call(params={:?}) self.env_info={:?}, parent_static={}", params, info, parent_static_flag);
 
 		let gas = params.gas;
@@ -249,7 +249,7 @@ impl<'a> CallCreateExecutive<'a> {
 	}
 
 	/// Create a new create executive using raw data.
-	pub fn new_create_raw(params: ActionParams, info: &'a EnvInfo, machine: &'a Machine, schedule: &'a Schedule, factory: &'a VmFactory, depth: usize, stack_depth: usize, static_flag: bool) -> Self {
+	pub fn new_create_raw(params: ActionParams, info: &'a EnvInfo, machine: &'a Machine<H>, schedule: &'a Schedule, factory: &'a VmFactory, depth: usize, stack_depth: usize, static_flag: bool) -> Self {
 		trace!("Executive::create(params={:?}) self.env_info={:?}, static={}", params, info, static_flag);
 
 		let gas = params.gas;
@@ -342,10 +342,10 @@ impl<'a> CallCreateExecutive<'a> {
 	}
 
 	/// Creates `Externalities` from `Executive`.
-	fn as_externalities<'any, B: 'any + StateBackend, T, V>(
+	fn as_externalities<'any, B: 'any + StateBackend, G: 'any + StateBackend + Clone, T, V>(
 		state: &'any mut State<B>,
 		info: &'any EnvInfo,
-		machine: &'any Machine,
+		machine: &'any Machine<G>,
 		schedule: &'any Schedule,
 		depth: usize,
 		stack_depth: usize,
@@ -355,7 +355,7 @@ impl<'a> CallCreateExecutive<'a> {
 		output: OutputPolicy,
 		tracer: &'any mut T,
 		vm_tracer: &'any mut V,
-	) -> Externalities<'any, T, V, B> where T: Tracer, V: VMTracer {
+	) -> Externalities<'any, T, V, B, G> where T: Tracer, V: VMTracer {
 		Externalities::new(state, info, machine, schedule, depth, stack_depth, origin_info, substate, output, tracer, vm_tracer, static_flag)
 	}
 
@@ -363,7 +363,7 @@ impl<'a> CallCreateExecutive<'a> {
 	/// then expected to call `resume_call` or `resume_create` to continue the execution.
 	///
 	/// Current-level tracing is expected to be handled by caller.
-	pub fn exec<B: 'a + StateBackend, T: Tracer, V: VMTracer>(mut self, state: &mut State<B>, substate: &mut Substate, tracer: &mut T, vm_tracer: &mut V) -> ExecutiveTrapResult<'a, FinalizationResult> {
+	pub fn exec<B: 'a + StateBackend, T: Tracer, V: VMTracer>(mut self, state: &mut State<B>, substate: &mut Substate, tracer: &mut T, vm_tracer: &mut V) -> ExecutiveTrapResult<'a, FinalizationResult, H> {
 		match self.kind {
 			CallCreateExecutiveKind::Transfer(ref params) => {
 				assert!(!self.is_create);
@@ -527,7 +527,7 @@ impl<'a> CallCreateExecutive<'a> {
 	/// Resume execution from a call trap previsouly trapped by `exec`.
 	///
 	/// Current-level tracing is expected to be handled by caller.
-	pub fn resume_call<B: 'a + StateBackend, T: Tracer, V: VMTracer>(mut self, result: vm::MessageCallResult, state: &mut State<B>, substate: &mut Substate, tracer: &mut T, vm_tracer: &mut V) -> ExecutiveTrapResult<'a, FinalizationResult> {
+	pub fn resume_call<B: 'a + StateBackend, T: Tracer, V: VMTracer>(mut self, result: vm::MessageCallResult, state: &mut State<B>, substate: &mut Substate, tracer: &mut T, vm_tracer: &mut V) -> ExecutiveTrapResult<'a, FinalizationResult, H> {
 		match self.kind {
 			CallCreateExecutiveKind::ResumeCall(origin_info, resume, mut unconfirmed_substate) => {
 				let out = {
@@ -566,7 +566,7 @@ impl<'a> CallCreateExecutive<'a> {
 	/// Resume execution from a create trap previsouly trapped by `exec`.
 	///
 	/// Current-level tracing is expected to be handled by caller.
-	pub fn resume_create<B: 'a + StateBackend, T: Tracer, V: VMTracer>(mut self, result: vm::ContractCreateResult, state: &mut State<B>, substate: &mut Substate, tracer: &mut T, vm_tracer: &mut V) -> ExecutiveTrapResult<'a, FinalizationResult> {
+	pub fn resume_create<B: 'a + StateBackend, T: Tracer, V: VMTracer>(mut self, result: vm::ContractCreateResult, state: &mut State<B>, substate: &mut Substate, tracer: &mut T, vm_tracer: &mut V) -> ExecutiveTrapResult<'a, FinalizationResult, H> {
 		match self.kind {
 			CallCreateExecutiveKind::ResumeCreate(origin_info, resume, mut unconfirmed_substate) => {
 				let out = {
@@ -606,7 +606,7 @@ impl<'a> CallCreateExecutive<'a> {
 	pub fn consume<B: 'a + StateBackend, T: Tracer, V: VMTracer>(self, state: &mut State<B>, top_substate: &mut Substate, tracer: &mut T, vm_tracer: &mut V) -> vm::Result<FinalizationResult> {
 		let mut last_res = Some((false, self.gas, self.exec(state, top_substate, tracer, vm_tracer)));
 
-		let mut callstack: Vec<(Option<Address>, CallCreateExecutive<'a>)> = Vec::new();
+		let mut callstack: Vec<(Option<Address>, CallCreateExecutive<'a, H>)> = Vec::new();
 		loop {
 			match last_res {
 				None => {
@@ -743,18 +743,18 @@ impl<'a> CallCreateExecutive<'a> {
 }
 
 /// Transaction executor.
-pub struct Executive<'a, B: 'a> {
+pub struct Executive<'a, B: 'a + StateBackend, G: 'a + StateBackend + Clone> {
 	state: &'a mut State<B>,
 	info: &'a EnvInfo,
-	machine: &'a Machine,
+	machine: &'a Machine<G>,
 	schedule: &'a Schedule,
 	depth: usize,
 	static_flag: bool,
 }
 
-impl<'a, B: 'a + StateBackend> Executive<'a, B> {
+impl<'a, B: 'a + StateBackend, G: 'a + StateBackend + Clone> Executive<'a, B, G> {
 	/// Basic constructor.
-	pub fn new(state: &'a mut State<B>, info: &'a EnvInfo, machine: &'a Machine, schedule: &'a Schedule) -> Self {
+	pub fn new(state: &'a mut State<B>, info: &'a EnvInfo, machine: &'a Machine<G>, schedule: &'a Schedule) -> Self {
 		Executive {
 			state: state,
 			info: info,
@@ -766,7 +766,7 @@ impl<'a, B: 'a + StateBackend> Executive<'a, B> {
 	}
 
 	/// Populates executive from parent properties. Increments executive depth.
-	pub fn from_parent(state: &'a mut State<B>, info: &'a EnvInfo, machine: &'a Machine, schedule: &'a Schedule, parent_depth: usize, static_flag: bool) -> Self {
+	pub fn from_parent(state: &'a mut State<B>, info: &'a EnvInfo, machine: &'a Machine<G>, schedule: &'a Schedule, parent_depth: usize, static_flag: bool) -> Self {
 		Executive {
 			state: state,
 			info: info,
@@ -1175,19 +1175,20 @@ mod tests {
 	use error::ExecutionError;
 	use machine::EthereumMachine;
 	use state::{Substate, CleanupMode};
+	use state_db::StateDB;
 	use test_helpers::{get_temp_state_with_factory, get_temp_state};
 	use trace::trace;
 	use trace::{FlatTrace, Tracer, NoopTracer, ExecutiveTracer};
 	use trace::{VMTrace, VMOperation, VMExecutedOperation, MemoryDiff, StorageDiff, VMTracer, NoopVMTracer, ExecutiveVMTracer};
 	use transaction::{Action, Transaction};
 
-	fn make_frontier_machine(max_depth: usize) -> EthereumMachine {
+	fn make_frontier_machine(max_depth: usize) -> EthereumMachine<StateDB> {
 		let mut machine = ::ethereum::new_frontier_test_machine();
 		machine.set_schedule_creation_rules(Box::new(move |s, _| s.max_depth = max_depth));
 		machine
 	}
 
-	fn make_byzantium_machine(max_depth: usize) -> EthereumMachine {
+	fn make_byzantium_machine(max_depth: usize) -> EthereumMachine<StateDB> {
 		let mut machine = ::ethereum::new_byzantium_test_machine();
 		machine.set_schedule_creation_rules(Box::new(move |s, _| s.max_depth = max_depth));
 		machine
@@ -1515,7 +1516,7 @@ mod tests {
 		let mut state = get_temp_state();
 		state.add_balance(&sender, &U256::from(100), CleanupMode::NoEmpty).unwrap();
 		let info = EnvInfo::default();
-		let machine = ::ethereum::new_byzantium_test_machine();
+		let machine = ::ethereum::new_byzantium_test_machine::<StateDB>();
 		let schedule = machine.schedule(info.number);
 		let mut substate = Substate::new();
 		let mut tracer = ExecutiveTracer::default();
@@ -2041,7 +2042,7 @@ mod tests {
 		params.code = Some(Arc::new(code));
 		params.value = ActionValue::Transfer(U256::zero());
 		let info = EnvInfo::default();
-		let machine = ::ethereum::new_byzantium_test_machine();
+		let machine = ::ethereum::new_byzantium_test_machine::<StateDB>();
 		let schedule = machine.schedule(info.number);
 		let mut substate = Substate::new();
 
@@ -2077,7 +2078,7 @@ mod tests {
 		state.init_code(&y2, "600060006000600061100162fffffff4".from_hex().unwrap()).unwrap();
 
 		let info = EnvInfo::default();
-		let machine = ::ethereum::new_constantinople_test_machine();
+		let machine = ::ethereum::new_constantinople_test_machine::<StateDB>();
 		let schedule = machine.schedule(info.number);
 
 		assert_eq!(state.storage_at(&operating_address, &k).unwrap(), H256::from(U256::from(0)));
@@ -2147,7 +2148,7 @@ mod tests {
 		info.number = 100;
 
 		// Network with wasm activated at block 10
-		let machine = ::ethereum::new_kovan_wasm_test_machine();
+		let machine = ::ethereum::new_kovan_wasm_test_machine::<StateDB>();
 
 		let mut output = [0u8; 20];
 		let FinalizationResult { gas_left: result, return_data, .. } = {

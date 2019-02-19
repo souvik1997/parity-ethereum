@@ -21,6 +21,7 @@ use dir::helpers::replace_home;
 use ethcore::account_provider::AccountProvider;
 use ethcore::client::Client;
 use ethcore::miner::Miner;
+use ethcore::state_db::StateDB;
 use ethkey::{Secret, Public};
 use sync::SyncProvider;
 use ethereum_types::Address;
@@ -91,7 +92,7 @@ pub struct Dependencies<'a> {
 	/// Sync provider.
 	pub sync: Arc<SyncProvider>,
 	/// Miner service.
-	pub miner: Arc<Miner>,
+	pub miner: Arc<Miner<StateDB>>,
 	/// Account provider.
 	pub account_provider: Arc<AccountProvider>,
 	/// Passed accounts passwords.

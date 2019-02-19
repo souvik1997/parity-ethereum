@@ -110,6 +110,8 @@ pub trait Machine: for<'a> LocalizedMachine<'a> {
 	/// Actions taken on ancestry blocks when commiting a new block.
 	type AncestryAction;
 
+	type StateBackend;
+
 	/// Errors which can occur when querying or interacting with the machine.
 	type Error;
 }

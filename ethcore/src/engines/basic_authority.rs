@@ -17,6 +17,8 @@
 //! A blockchain engine that supports a basic, non-BFT proof-of-authority.
 
 use std::sync::{Weak, Arc};
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 use ethereum_types::{H256, H520, Address};
 use parking_lot::RwLock;
 use ethkey::{self, Password, Signature};
@@ -28,6 +30,7 @@ use ethjson;
 use header::{Header, ExtendedHeader};
 use client::EngineClient;
 use machine::{AuxiliaryData, Call, EthereumMachine};
+use state::backend::Backend;
 use super::signer::EngineSigner;
 use super::validator_set::{ValidatorSet, SimpleList, new_validator_set};
 
@@ -46,17 +49,18 @@ impl From<ethjson::spec::BasicAuthorityParams> for BasicAuthorityParams {
 	}
 }
 
-struct EpochVerifier {
-	list: SimpleList,
+struct EpochVerifier<B> {
+	list: SimpleList<B>,
+	_phantom: SafePhantomData<B>
 }
 
-impl super::EpochVerifier<EthereumMachine> for EpochVerifier {
+impl<B: Backend + Clone + 'static> super::EpochVerifier<EthereumMachine<B>> for EpochVerifier<B> {
 	fn verify_light(&self, header: &Header) -> Result<(), Error> {
 		verify_external(header, &self.list)
 	}
 }
 
-fn verify_external(header: &Header, validators: &ValidatorSet) -> Result<(), Error> {
+fn verify_external<B: Backend + Clone + 'static>(header: &Header, validators: &ValidatorSet<MachineStateBackend = B>) -> Result<(), Error> {
 	use rlp::Rlp;
 
 	// Check if the signature belongs to a validator, can depend on parent state.
@@ -74,15 +78,15 @@ fn verify_external(header: &Header, validators: &ValidatorSet) -> Result<(), Err
 }
 
 /// Engine using `BasicAuthority`, trivial proof-of-authority consensus.
-pub struct BasicAuthority {
-	machine: EthereumMachine,
+pub struct BasicAuthority<B: Backend + Clone> {
+	machine: EthereumMachine<B>,
 	signer: RwLock<EngineSigner>,
-	validators: Box<ValidatorSet>,
+	validators: Box<ValidatorSet<MachineStateBackend = B>>,
 }
 
-impl BasicAuthority {
+impl<B: Backend + Clone + 'static> BasicAuthority<B> {
 	/// Create a new instance of BasicAuthority engine
-	pub fn new(our_params: BasicAuthorityParams, machine: EthereumMachine) -> Self {
+	pub fn new(our_params: BasicAuthorityParams, machine: EthereumMachine<B>) -> Self {
 		BasicAuthority {
 			machine: machine,
 			signer: Default::default(),
@@ -91,10 +95,10 @@ impl BasicAuthority {
 	}
 }
 
-impl Engine<EthereumMachine> for BasicAuthority {
+impl<B: Backend + Clone + 'static> Engine<EthereumMachine<B>> for BasicAuthority<B> {
 	fn name(&self) -> &str { "BasicAuthority" }
 
-	fn machine(&self) -> &EthereumMachine { &self.machine }
+	fn machine(&self) -> &EthereumMachine<B> { &self.machine }
 
 	// One field - the signature
 	fn seal_fields(&self, _header: &Header) -> usize { 1 }
@@ -104,7 +108,7 @@ impl Engine<EthereumMachine> for BasicAuthority {
 	}
 
 	/// Attempt to seal the block internally.
-	fn generate_seal(&self, block: &ExecutedBlock, _parent: &Header) -> Seal {
+	fn generate_seal(&self, block: &ExecutedBlock<B>, _parent: &Header) -> Seal {
 		let header = block.header();
 		let author = header.author();
 		if self.validators.contains(header.parent_hash(), author) {
@@ -132,7 +136,7 @@ impl Engine<EthereumMachine> for BasicAuthority {
 
 	#[cfg(not(test))]
 	fn signals_epoch_end(&self, _header: &Header, _auxiliary: AuxiliaryData)
-		-> super::EpochChange<EthereumMachine>
+		-> super::EpochChange<EthereumMachine<B>>
 	{
 		// don't bother signalling even though a contract might try.
 		super::EpochChange::No
@@ -140,7 +144,7 @@ impl Engine<EthereumMachine> for BasicAuthority {
 
 	#[cfg(test)]
 	fn signals_epoch_end(&self, header: &Header, auxiliary: AuxiliaryData)
-		-> super::EpochChange<EthereumMachine>
+		-> super::EpochChange<EthereumMachine<B>>
 	{
 		// in test mode, always signal even though they don't be finalized.
 		let first = header.number() == 0;
@@ -169,12 +173,12 @@ impl Engine<EthereumMachine> for BasicAuthority {
 		self.is_epoch_end(chain_head, &[], chain, transition_store)
 	}
 
-	fn epoch_verifier<'a>(&self, header: &Header, proof: &'a [u8]) -> ConstructedVerifier<'a, EthereumMachine> {
+	fn epoch_verifier<'a>(&self, header: &Header, proof: &'a [u8]) -> ConstructedVerifier<'a, EthereumMachine<B>> {
 		let first = header.number() == 0;
 
 		match self.validators.epoch_set(first, &self.machine, header.number(), proof) {
 			Ok((list, finalize)) => {
-				let verifier = Box::new(EpochVerifier { list: list });
+				let verifier = Box::new(EpochVerifier { list: list, _phantom: PhantomData });
 
 				// our epoch verifier will ensure no unverified verifier is ever verified.
 				match finalize {
@@ -186,7 +190,7 @@ impl Engine<EthereumMachine> for BasicAuthority {
 		}
 	}
 
-	fn register_client(&self, client: Weak<EngineClient>) {
+	fn register_client(&self, client: Weak<EngineClient<StateBackend = B>>) {
 		self.validators.register_client(client);
 	}
 
@@ -198,7 +202,7 @@ impl Engine<EthereumMachine> for BasicAuthority {
 		Ok(self.signer.read().sign(hash)?)
 	}
 
-	fn snapshot_components(&self) -> Option<Box<::snapshot::SnapshotComponents>> {
+	fn snapshot_components(&self) -> Option<Box<::snapshot::SnapshotComponents<StateBackend = B>>> {
 		None
 	}
 
@@ -219,9 +223,10 @@ mod tests {
 	use spec::Spec;
 	use engines::Seal;
 	use tempdir::TempDir;
+	use state_db::StateDB;
 
 	/// Create a new test chain spec with `BasicAuthority` consensus engine.
-	fn new_test_authority() -> Spec {
+	fn new_test_authority() -> Spec<StateDB> {
 		let bytes: &[u8] = include_bytes!("../../res/basic_authority.json");
 		let tempdir = TempDir::new("").unwrap();
 		Spec::load(&tempdir.path(), bytes).expect("invalid chain spec")

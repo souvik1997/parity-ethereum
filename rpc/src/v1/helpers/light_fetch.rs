@@ -643,7 +643,7 @@ struct ExecuteParams {
 	tx: EthTransaction,
 	hdr: encoded::Header,
 	env_info: ::vm::EnvInfo,
-	engine: Arc<::ethcore::engines::EthEngine>,
+	engine: Arc<::ethcore::engines::EthEngine<::ethcore::state_db::StateDB>>,
 	on_demand: Arc<OnDemand>,
 	sync: Arc<LightSync>,
 }
@@ -664,7 +664,7 @@ fn execute_read_only_tx(gas_known: bool, params: ExecuteParams) -> impl Future<I
 							} else {
 								params.tx.gas = cmp::min(params.tx.gas * 2_u32, params.hdr.gas_limit());
 								trace!(target: "light_fetch", "OutOutGas exception received, gas increased to {}",
-									   params.tx.gas);
+										 params.tx.gas);
 								return Ok(future::Loop::Continue(params))
 							}
 						}
@@ -672,13 +672,13 @@ fn execute_read_only_tx(gas_known: bool, params: ExecuteParams) -> impl Future<I
 					}
 					Err(ExecutionError::NotEnoughBaseGas { required, got }) => {
 						trace!(target: "light_fetch", "Not enough start gas provided required: {}, got: {}",
-							   required, got);
+								 required, got);
 						if required <= params.hdr.gas_limit() {
 							params.tx.gas = required;
 							return Ok(future::Loop::Continue(params))
 						} else {
 							warn!(target: "light_fetch",
-								  "Required gas is bigger than block header's gas dropping the request");
+									"Required gas is bigger than block header's gas dropping the request");
 							Ok(future::Loop::Break(Err(ExecutionError::NotEnoughBaseGas { required, got })))
 						}
 					}

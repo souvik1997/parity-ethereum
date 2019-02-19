@@ -19,6 +19,7 @@ use std::sync::{Arc, mpsc};
 use ethcore::client::BlockChainClient;
 use sync::{self, AttachedProtocol, SyncConfig, NetworkConfiguration, Params, ConnectionFilter};
 use ethcore::snapshot::SnapshotService;
+use ethcore::state_db::StateDB;
 use light::Provider;
 
 pub use sync::{EthSync, SyncProvider, ManageNetwork, PrivateTxHandler};
@@ -35,7 +36,7 @@ pub type SyncModules = (
 pub fn sync(
 	config: SyncConfig,
 	network_config: NetworkConfiguration,
-	chain: Arc<BlockChainClient>,
+	chain: Arc<BlockChainClient<StateBackend = StateDB>>,
 	snapshot_service: Arc<SnapshotService>,
 	private_tx_handler: Arc<PrivateTxHandler>,
 	provider: Arc<Provider>,

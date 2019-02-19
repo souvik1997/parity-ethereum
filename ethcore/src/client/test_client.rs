@@ -100,9 +100,9 @@ pub struct TestBlockChainClient {
 	/// Block queue size.
 	pub queue_size: AtomicUsize,
 	/// Miner
-	pub miner: Arc<Miner>,
+	pub miner: Arc<Miner<StateDB>>,
 	/// Spec
-	pub spec: Spec,
+	pub spec: Spec<StateDB>,
 	/// Timestamp assigned to latest sealed block
 	pub latest_block_timestamp: RwLock<u64>,
 	/// Ancient block info.
@@ -144,17 +144,17 @@ impl TestBlockChainClient {
 
 	/// Creates new test client with specified extra data for each block
 	pub fn new_with_extra_data(extra_data: Bytes) -> Self {
-		let spec = Spec::new_test();
+		let spec = Spec::<StateDB>::new_test();
 		TestBlockChainClient::new_with_spec_and_extra(spec, extra_data)
 	}
 
 	/// Create test client with custom spec.
-	pub fn new_with_spec(spec: Spec) -> Self {
+	pub fn new_with_spec(spec: Spec<StateDB>) -> Self {
 		TestBlockChainClient::new_with_spec_and_extra(spec, Bytes::new())
 	}
 
 	/// Create test client with custom spec and extra data.
-	pub fn new_with_spec_and_extra(spec: Spec, extra_data: Bytes) -> Self {
+	pub fn new_with_spec_and_extra(spec: Spec<StateDB>, extra_data: Bytes) -> Self {
 		let genesis_block = spec.genesis_block();
 		let genesis_hash = spec.genesis_header().hash();
 
@@ -378,13 +378,15 @@ pub fn get_temp_state_db() -> StateDB {
 }
 
 impl ReopenBlock for TestBlockChainClient {
-	fn reopen_block(&self, block: ClosedBlock) -> OpenBlock {
+	type ReopenBlockStateBackend = StateDB;
+	fn reopen_block(&self, block: ClosedBlock<StateDB>) -> OpenBlock<StateDB> {
 		block.reopen(&*self.spec.engine)
 	}
 }
 
 impl PrepareOpenBlock for TestBlockChainClient {
-	fn prepare_open_block(&self, author: Address, gas_range_target: (U256, U256), extra_data: Bytes) -> Result<OpenBlock, Error> {
+	type PrepareOpenBlockStateBackend = StateDB;
+	fn prepare_open_block(&self, author: Address, gas_range_target: (U256, U256), extra_data: Bytes) -> Result<OpenBlock<StateDB>, Error> {
 		let engine = &*self.spec.engine;
 		let genesis_header = self.spec.genesis_header();
 		let db = self.spec.ensure_db_good(get_temp_state_db(), &Default::default()).unwrap();
@@ -416,7 +418,8 @@ impl ScheduleInfo for TestBlockChainClient {
 }
 
 impl ImportSealedBlock for TestBlockChainClient {
-	fn import_sealed_block(&self, _block: SealedBlock) -> EthcoreResult<H256> {
+	type ImportSealedBlockStateBackend = StateDB;
+	fn import_sealed_block(&self, _block: SealedBlock<StateDB>) -> EthcoreResult<H256> {
 		Ok(H256::default())
 	}
 }
@@ -424,7 +427,8 @@ impl ImportSealedBlock for TestBlockChainClient {
 impl BlockProducer for TestBlockChainClient {}
 
 impl BroadcastProposalBlock for TestBlockChainClient {
-	fn broadcast_proposal_block(&self, _block: SealedBlock) {}
+	type BroadcastProposalBlockStateBackend = StateDB;
+	fn broadcast_proposal_block(&self, _block: SealedBlock<StateDB>) {}
 }
 
 impl SealedBlockImporter for TestBlockChainClient {}
@@ -615,7 +619,8 @@ impl StateClient for TestBlockChainClient {
 }
 
 impl EngineInfo for TestBlockChainClient {
-	fn engine(&self) -> &EthEngine {
+	type EngineStateBackend = StateDB;
+	fn engine(&self) -> &EthEngine<StateDB> {
 		unimplemented!()
 	}
 }
@@ -635,6 +640,7 @@ impl BadBlocks for TestBlockChainClient {
 }
 
 impl BlockChainClient for TestBlockChainClient {
+	type StateBackend = StateDB;
 	fn replay(&self, _id: TransactionId, _analytics: CallAnalytics) -> Result<Executed, CallError> {
 		self.execution_result.read().clone().unwrap()
 	}
@@ -918,6 +924,9 @@ impl ProvingBlockChainClient for TestBlockChainClient {
 }
 
 impl super::traits::EngineClient for TestBlockChainClient {
+
+	type StateBackend = StateDB;
+
 	fn update_sealing(&self) {
 		self.miner.update_sealing(self)
 	}
@@ -935,13 +944,13 @@ impl super::traits::EngineClient for TestBlockChainClient {
 		None
 	}
 
-	fn as_full_client(&self) -> Option<&BlockChainClient> { Some(self) }
+	fn as_full_client(&self) -> Option<&BlockChainClient<StateBackend = StateDB>> { Some(self) }
 
 	fn block_number(&self, id: BlockId) -> Option<BlockNumber> {
 		BlockChainClient::block_number(self, id)
 	}
 
 	fn block_header(&self, id: BlockId) -> Option<::encoded::Header> {
-		BlockChainClient::block_header(self, id)
+		BlockChainClient::<StateBackend = StateDB>::block_header(self, id)
 	}
 }

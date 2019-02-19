@@ -23,6 +23,7 @@ use ethcore::engines::{EthEngine, StateDependentProof};
 use ethcore::machine::EthereumMachine;
 use ethcore::header::Header;
 use ethcore::receipt::Receipt;
+use ethcore::state_db::StateDB;
 use futures::future::IntoFuture;
 use ethereum_types::H256;
 
@@ -48,8 +49,8 @@ pub trait ChainDataFetcher: Send + Sync + 'static {
 	fn epoch_transition(
 		&self,
 		_hash: H256,
-		_engine: Arc<EthEngine>,
-		_checker: Arc<StateDependentProof<EthereumMachine>>
+		_engine: Arc<EthEngine<StateDB>>,
+		_checker: Arc<StateDependentProof<EthereumMachine<StateDB>>>
 	) -> Self::Transition;
 }
 
@@ -77,8 +78,8 @@ impl ChainDataFetcher for Unavailable {
 	fn epoch_transition(
 		&self,
 		_hash: H256,
-		_engine: Arc<EthEngine>,
-		_checker: Arc<StateDependentProof<EthereumMachine>>
+		_engine: Arc<EthEngine<StateDB>>,
+		_checker: Arc<StateDependentProof<EthereumMachine<StateDB>>>
 	) -> Self::Transition {
 		Err("fetching epoch transition proofs unavailable")
 	}

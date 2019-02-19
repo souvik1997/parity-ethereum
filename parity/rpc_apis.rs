@@ -26,6 +26,7 @@ use ethcore::account_provider::AccountProvider;
 use ethcore::client::Client;
 use ethcore::miner::Miner;
 use ethcore::snapshot::SnapshotService;
+use ethcore::state_db::StateDB;
 use ethcore_logger::RotatingLogger;
 use sync::{ManageNetwork, SyncProvider, LightSync};
 use hash_fetch::fetch::Client as FetchClient;
@@ -221,7 +222,7 @@ pub struct FullDependencies {
 	pub net: Arc<ManageNetwork>,
 	pub secret_store: Arc<AccountProvider>,
 	pub private_tx_service: Option<Arc<PrivateTxService>>,
-	pub miner: Arc<Miner>,
+	pub miner: Arc<Miner<StateDB>>,
 	pub external_miner: Arc<ExternalMiner>,
 	pub logger: Arc<RotatingLogger>,
 	pub settings: Arc<NetworkSettings>,

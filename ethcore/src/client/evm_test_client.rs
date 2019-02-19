@@ -65,7 +65,7 @@ use ethjson::spec::ForkSpec;
 /// Simplified, single-block EVM test client.
 pub struct EvmTestClient<'a> {
 	state: state::State<state_db::StateDB>,
-	spec: &'a spec::Spec,
+	spec: &'a spec::Spec<state_db::StateDB>,
 }
 
 impl<'a> fmt::Debug for EvmTestClient<'a> {
@@ -79,7 +79,7 @@ impl<'a> fmt::Debug for EvmTestClient<'a> {
 
 impl<'a> EvmTestClient<'a> {
 	/// Converts a json spec definition into spec.
-	pub fn spec_from_json(spec: &ForkSpec) -> Option<spec::Spec> {
+	pub fn spec_from_json(spec: &ForkSpec) -> Option<spec::Spec<state_db::StateDB>> {
 		match *spec {
 			ForkSpec::Frontier => Some(ethereum::new_frontier_test()),
 			ForkSpec::Homestead => Some(ethereum::new_homestead_test()),
@@ -93,7 +93,7 @@ impl<'a> EvmTestClient<'a> {
 	}
 
 	/// Creates new EVM test client with in-memory DB initialized with genesis of given Spec.
-	pub fn new(spec: &'a spec::Spec) -> Result<Self, EvmTestError> {
+	pub fn new(spec: &'a spec::Spec<state_db::StateDB>) -> Result<Self, EvmTestError> {
 		let factories = Self::factories();
 		let state =	Self::state_from_spec(spec, &factories)?;
 
@@ -104,7 +104,7 @@ impl<'a> EvmTestClient<'a> {
 	}
 
 	/// Creates new EVM test client with in-memory DB initialized with given PodState.
-	pub fn from_pod_state(spec: &'a spec::Spec, pod_state: pod_state::PodState) -> Result<Self, EvmTestError> {
+	pub fn from_pod_state(spec: &'a spec::Spec<state_db::StateDB>, pod_state: pod_state::PodState) -> Result<Self, EvmTestError> {
 		let factories = Self::factories();
 		let state =	Self::state_from_pod(spec, &factories, pod_state)?;
 
@@ -122,7 +122,7 @@ impl<'a> EvmTestClient<'a> {
 		}
 	}
 
-	fn state_from_spec(spec: &'a spec::Spec, factories: &Factories) -> Result<state::State<state_db::StateDB>, EvmTestError> {
+	fn state_from_spec(spec: &'a spec::Spec<state_db::StateDB>, factories: &Factories) -> Result<state::State<state_db::StateDB>, EvmTestError> {
 		let db = Arc::new(kvdb_memorydb::create(db::NUM_COLUMNS.expect("We use column-based DB; qed")));
 		let journal_db = journaldb::new(db.clone(), journaldb::Algorithm::EarlyMerge, db::COL_STATE);
 		let mut state_db = state_db::StateDB::new(journal_db, 5 * 1024 * 1024);
@@ -144,7 +144,7 @@ impl<'a> EvmTestClient<'a> {
 		).map_err(EvmTestError::Trie)
 	}
 
-	fn state_from_pod(spec: &'a spec::Spec, factories: &Factories, pod_state: pod_state::PodState) -> Result<state::State<state_db::StateDB>, EvmTestError> {
+	fn state_from_pod(spec: &'a spec::Spec<state_db::StateDB>, factories: &Factories, pod_state: pod_state::PodState) -> Result<state::State<state_db::StateDB>, EvmTestError> {
 		let db = Arc::new(kvdb_memorydb::create(db::NUM_COLUMNS.expect("We use column-based DB; qed")));
 		let journal_db = journaldb::new(db.clone(), journaldb::Algorithm::EarlyMerge, db::COL_STATE);
 		let state_db = state_db::StateDB::new(journal_db, 5 * 1024 * 1024);

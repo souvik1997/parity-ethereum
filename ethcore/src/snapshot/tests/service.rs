@@ -27,6 +27,7 @@ use snapshot::io::{PackedReader, PackedWriter, SnapshotReader, SnapshotWriter};
 use snapshot::service::{Service, ServiceParams};
 use snapshot::{chunk_state, chunk_secondary, ManifestData, Progress, SnapshotService, RestorationStatus};
 use spec::Spec;
+use state_db::StateDB;
 use test_helpers::{new_db, new_temp_db, generate_dummy_client_with_spec_and_data, restoration_db_handler};
 
 use parking_lot::Mutex;
@@ -153,7 +154,7 @@ fn keep_ancient_blocks() {
 	// Test variables
 	const NUM_BLOCKS: u64 = 500;
 	const NUM_SNAPSHOT_BLOCKS: u64 = 300;
-	const SNAPSHOT_MODE: ::snapshot::PowSnapshot = ::snapshot::PowSnapshot { blocks: NUM_SNAPSHOT_BLOCKS, max_restore_blocks: NUM_SNAPSHOT_BLOCKS };
+	const SNAPSHOT_MODE: ::snapshot::PowSnapshot<StateDB> = ::snapshot::PowSnapshot { blocks: NUM_SNAPSHOT_BLOCKS, max_restore_blocks: NUM_SNAPSHOT_BLOCKS, _phantom: ::std::marker::PhantomData };
 
 	// Temporary folders
 	let tempdir = TempDir::new("").unwrap();

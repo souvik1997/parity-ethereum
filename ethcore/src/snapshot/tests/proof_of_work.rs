@@ -24,13 +24,14 @@ use blockchain::generator::{BlockGenerator, BlockBuilder};
 use blockchain::{BlockChain, ExtrasInsert};
 use snapshot::{chunk_secondary, Error as SnapshotError, Progress, SnapshotComponents};
 use snapshot::io::{PackedReader, PackedWriter, SnapshotReader, SnapshotWriter};
+use state_db::StateDB;
 
 use parking_lot::Mutex;
 use snappy;
 use kvdb::DBTransaction;
 use test_helpers;
 
-const SNAPSHOT_MODE: ::snapshot::PowSnapshot = ::snapshot::PowSnapshot { blocks: 30000, max_restore_blocks: 30000 };
+const SNAPSHOT_MODE: ::snapshot::PowSnapshot<StateDB> = ::snapshot::PowSnapshot { blocks: 30000, max_restore_blocks: 30000, _phantom: ::std::marker::PhantomData };
 
 fn chunk_and_restore(amount: u64) {
 	let genesis = BlockBuilder::genesis();

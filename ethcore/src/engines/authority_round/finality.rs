@@ -18,6 +18,8 @@
 
 use std::collections::{VecDeque};
 use std::collections::hash_map::{HashMap, Entry};
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 
 use ethereum_types::{H256, Address};
 
@@ -29,14 +31,15 @@ pub struct UnknownValidator;
 
 /// Rolling finality checker for authority round consensus.
 /// Stores a chain of unfinalized hashes that can be pushed onto.
-pub struct RollingFinality {
+pub struct RollingFinality<B> {
 	headers: VecDeque<(H256, Vec<Address>)>,
-	signers: SimpleList,
+	signers: SimpleList<B>,
 	sign_count: HashMap<Address, usize>,
 	last_pushed: Option<H256>,
+	_phantom: SafePhantomData<B>
 }
 
-impl RollingFinality {
+impl<B> RollingFinality<B> {
 	/// Create a blank finality checker under the given validator set.
 	pub fn blank(signers: Vec<Address>) -> Self {
 		RollingFinality {
@@ -44,6 +47,7 @@ impl RollingFinality {
 			signers: SimpleList::new(signers),
 			sign_count: HashMap::new(),
 			last_pushed: None,
+			_phantom: PhantomData,
 		}
 	}
 
@@ -102,7 +106,7 @@ impl RollingFinality {
 	}
 
 	/// Get the validator set.
-	pub fn validators(&self) -> &SimpleList { &self.signers }
+	pub fn validators(&self) -> &SimpleList<B> { &self.signers }
 
 	/// Push a hash onto the rolling finality checker (implying `subchain_head` == head.parent)
 	///
@@ -150,13 +154,14 @@ impl RollingFinality {
 
 #[cfg(test)]
 mod tests {
+	use state_db::StateDB;
 	use ethereum_types::{H256, Address};
 	use super::RollingFinality;
 
 	#[test]
 	fn rejects_unknown_signers() {
 		let signers = (0..3).map(|_| Address::random()).collect::<Vec<_>>();
-		let mut finality = RollingFinality::blank(signers.clone());
+		let mut finality = RollingFinality::<StateDB>::blank(signers.clone());
 		assert!(finality.push_hash(H256::random(), vec![signers[0], Address::random()]).is_err());
 	}
 
@@ -164,7 +169,7 @@ mod tests {
 	fn finalize_multiple() {
 		let signers: Vec<_> = (0..6).map(|_| Address::random()).collect();
 
-		let mut finality = RollingFinality::blank(signers.clone());
+		let mut finality = RollingFinality::<StateDB>::blank(signers.clone());
 		let hashes: Vec<_> = (0..7).map(|_| H256::random()).collect();
 
 		// 3 / 6 signers is < 51% so no finality.
@@ -182,7 +187,7 @@ mod tests {
 	#[test]
 	fn finalize_multiple_signers() {
 		let signers: Vec<_> = (0..6).map(|_| Address::random()).collect();
-		let mut finality = RollingFinality::blank(signers.clone());
+		let mut finality = RollingFinality::<StateDB>::blank(signers.clone());
 		let hash = H256::random();
 
 		// after pushing a block signed by four validators, it becomes verified right away.
@@ -194,7 +199,7 @@ mod tests {
 		let signers: Vec<_> = (0..6).map(|_| Address::random()).collect();
 		let hashes: Vec<_> = (0..12).map(|i| (H256::random(), vec![signers[i % 6]])).collect();
 
-		let mut finality = RollingFinality::blank(signers.clone());
+		let mut finality = RollingFinality::<StateDB>::blank(signers.clone());
 		finality.build_ancestry_subchain(hashes.iter().rev().cloned()).unwrap();
 
 		assert_eq!(finality.unfinalized_hashes().count(), 3);
@@ -208,7 +213,7 @@ mod tests {
 			(H256::random(), vec![signers[i % 6], signers[(i + 1) % 6], signers[(i + 2) % 6]])
 		}).collect();
 
-		let mut finality = RollingFinality::blank(signers.clone());
+		let mut finality = RollingFinality::<StateDB>::blank(signers.clone());
 		finality.build_ancestry_subchain(hashes.iter().rev().cloned()).unwrap();
 
 		// only the last hash has < 51% of authorities' signatures

@@ -28,6 +28,7 @@ use ethcore::snapshot::service::Service as SnapshotService;
 use ethcore::client::{Mode, DatabaseCompactionProfile, VMType};
 use ethcore::miner::Miner;
 use ethcore::ids::BlockId;
+use ethcore::state_db::StateDB;
 use ethcore_service::ClientService;
 
 use cache::CacheConfig;
@@ -68,7 +69,7 @@ pub struct SnapshotCommand {
 
 // helper for reading chunks from arbitrary reader and feeding them into the
 // service.
-fn restore_using<R: SnapshotReader>(snapshot: Arc<SnapshotService>, reader: &R, recover: bool) -> Result<(), String> {
+fn restore_using<R: SnapshotReader>(snapshot: Arc<SnapshotService<StateDB>>, reader: &R, recover: bool) -> Result<(), String> {
 	let manifest = reader.manifest();
 
 	info!("Restoring to block #{} (0x{:?})", manifest.block_number, manifest.block_hash);
@@ -81,20 +82,20 @@ fn restore_using<R: SnapshotReader>(snapshot: Arc<SnapshotService>, reader: &R, 
 
 	let informant_handle = snapshot.clone();
 	::std::thread::spawn(move || {
- 		while let RestorationStatus::Ongoing { state_chunks_done, block_chunks_done, .. } = informant_handle.status() {
- 			info!("Processed {}/{} state chunks and {}/{} block chunks.",
- 				state_chunks_done, num_state, block_chunks_done, num_blocks);
- 			::std::thread::sleep(Duration::from_secs(5));
- 		}
- 	});
+		while let RestorationStatus::Ongoing { state_chunks_done, block_chunks_done, .. } = informant_handle.status() {
+			info!("Processed {}/{} state chunks and {}/{} block chunks.",
+				state_chunks_done, num_state, block_chunks_done, num_blocks);
+			::std::thread::sleep(Duration::from_secs(5));
+		}
+	});
 
- 	info!("Restoring state");
- 	for &state_hash in &manifest.state_hashes {
- 		if snapshot.status() == RestorationStatus::Failed {
- 			return Err("Restoration failed".into());
- 		}
+	info!("Restoring state");
+	for &state_hash in &manifest.state_hashes {
+		if snapshot.status() == RestorationStatus::Failed {
+			return Err("Restoration failed".into());
+		}
 
- 		let chunk = reader.chunk(state_hash)
+		let chunk = reader.chunk(state_hash)
 			.map_err(|e| format!("Encountered error while reading chunk {:?}: {}", state_hash, e))?;
 
 		let hash = keccak(&chunk);
@@ -102,8 +103,8 @@ fn restore_using<R: SnapshotReader>(snapshot: Arc<SnapshotService>, reader: &R, 
 			return Err(format!("Mismatched chunk hash. Expected {:?}, got {:?}", state_hash, hash));
 		}
 
- 		snapshot.feed_state_chunk(state_hash, &chunk);
- 	}
+		snapshot.feed_state_chunk(state_hash, &chunk);
+	}
 
 	info!("Restoring blocks");
 	for &block_hash in &manifest.block_hashes {
@@ -111,7 +112,7 @@ fn restore_using<R: SnapshotReader>(snapshot: Arc<SnapshotService>, reader: &R, 
 			return Err("Restoration failed".into());
 		}
 
- 		let chunk = reader.chunk(block_hash)
+		let chunk = reader.chunk(block_hash)
 			.map_err(|e| format!("Encountered error while reading chunk {:?}: {}", block_hash, e))?;
 
 		let hash = keccak(&chunk);
@@ -267,7 +268,7 @@ impl SnapshotCommand {
 
 				::std::thread::sleep(Duration::from_secs(5));
 			}
- 		});
+		});
 
 		if let Err(e) = service.client().take_snapshot(writer, block_at, &*progress) {
 			let _ = ::std::fs::remove_file(&file_path);

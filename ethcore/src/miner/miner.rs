@@ -44,7 +44,7 @@ use account_provider::{AccountProvider, SignError as AccountError};
 use block::{ClosedBlock, IsBlock, Block, SealedBlock};
 use client::{
 	BlockChain, ChainInfo, CallContract, BlockProducer, SealedBlockImporter, Nonce, TransactionInfo, TransactionId,
-	ProvingCallContract
+	ProvingCallContract, ReopenBlock, BroadcastProposalBlock, ImportSealedBlock, PrepareOpenBlock
 };
 use client::{BlockId, ClientIoMessage};
 use executive::contract_address;
@@ -53,7 +53,7 @@ use miner;
 use miner::pool_client::{PoolClient, CachedNonceClient, NonceCache};
 use receipt::RichReceipt;
 use spec::Spec;
-use state::{State, backend::Proving};
+use state::{State, backend::Backend};
 use ethkey::Password;
 
 /// Different possible definitions for pending transaction set.
@@ -194,8 +194,8 @@ pub struct AuthoringParams {
 	pub extra_data: Bytes,
 }
 
-struct SealingWork {
-	queue: UsingQueue<ClosedBlock>,
+struct SealingWork<B: Backend + Clone> {
+	queue: UsingQueue<ClosedBlock<B>>,
 	enabled: bool,
 	next_allowed_reseal: Instant,
 	next_mandatory_reseal: Instant,
@@ -203,7 +203,7 @@ struct SealingWork {
 	last_request: Option<u64>,
 }
 
-impl SealingWork {
+impl<B: Backend + Clone> SealingWork<B> {
 	/// Are we allowed to do a non-mandatory reseal?
 	fn reseal_allowed(&self) -> bool {
 		Instant::now() > self.next_allowed_reseal
@@ -212,9 +212,9 @@ impl SealingWork {
 
 /// Keeps track of transactions using priority queue and holds currently mined block.
 /// Handles preparing work for "work sealing" or seals "internally" if Engine does not require work.
-pub struct Miner {
+pub struct Miner<B: Backend + Clone> {
 	// NOTE [ToDr]  When locking always lock in this order!
-	sealing: Mutex<SealingWork>,
+	sealing: Mutex<SealingWork<B>>,
 	params: RwLock<AuthoringParams>,
 	#[cfg(feature = "work-notify")]
 	listeners: RwLock<Vec<Box<NotifyWork>>>,
@@ -223,12 +223,12 @@ pub struct Miner {
 	options: MinerOptions,
 	// TODO [ToDr] Arc is only required because of price updater
 	transaction_queue: Arc<TransactionQueue>,
-	engine: Arc<EthEngine>,
+	engine: Arc<EthEngine<B>>,
 	accounts: Option<Arc<AccountProvider>>,
 	io_channel: RwLock<Option<IoChannel<ClientIoMessage>>>,
 }
 
-impl Miner {
+impl<B: Backend + Clone + 'static> Miner<B> {
 	/// Push listener that will handle new jobs
 	#[cfg(feature = "work-notify")]
 	pub fn add_work_listener(&self, notifier: Box<NotifyWork>) {
@@ -245,7 +245,7 @@ impl Miner {
 	pub fn new(
 		options: MinerOptions,
 		gas_pricer: GasPricer,
-		spec: &Spec,
+		spec: &Spec<B>,
 		accounts: Option<Arc<AccountProvider>>,
 	) -> Self {
 		let limits = options.pool_limits.clone();
@@ -278,7 +278,7 @@ impl Miner {
 	/// Creates new instance of miner with given spec and accounts.
 	///
 	/// NOTE This should be only used for tests.
-	pub fn new_for_tests(spec: &Spec, accounts: Option<Arc<AccountProvider>>) -> Miner {
+	pub fn new_for_tests(spec: &Spec<B>, accounts: Option<Arc<AccountProvider>>) -> Miner<B> {
 		let minimal_gas_price = 0.into();
 		Miner::new(MinerOptions {
 			pool_verification_options: pool::verifier::Options {
@@ -334,7 +334,7 @@ impl Miner {
 	///
 	/// NOTE: This will not prepare a new pending block if it's not existing.
 	fn map_existing_pending_block<F, T>(&self, f: F, latest_block_number: BlockNumber) -> Option<T> where
-		F: FnOnce(&ClosedBlock) -> T,
+		F: FnOnce(&ClosedBlock<B>) -> T,
 	{
 		self.sealing.lock().queue
 			.peek_last_ref()
@@ -349,7 +349,7 @@ impl Miner {
 			})
 	}
 
-	fn pool_client<'a, C: 'a>(&'a self, chain: &'a C) -> PoolClient<'a, C> where
+	fn pool_client<'a, C: 'a>(&'a self, chain: &'a C) -> PoolClient<'a, C, B> where
 		C: BlockChain + CallContract + ProvingCallContract,
 	{
 		PoolClient::new(
@@ -362,8 +362,8 @@ impl Miner {
 	}
 
 	/// Prepares new block for sealing including top transactions from queue.
-	fn prepare_block<C>(&self, chain: &C) -> Option<(ClosedBlock, Option<H256>)> where
-		C: BlockChain + CallContract + BlockProducer + Nonce + ProvingCallContract + Sync,
+	fn prepare_block<C>(&self, chain: &C) -> Option<(ClosedBlock<B>, Option<H256>)> where
+		C: BlockChain + CallContract + BlockProducer + Nonce + ProvingCallContract + Sync + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B>
 	{
 		trace_time!("prepare_block");
 		let chain_info = chain.chain_info();
@@ -610,8 +610,8 @@ impl Miner {
 	}
 
 	/// Attempts to perform internal sealing (one that does not require work) and handles the result depending on the type of Seal.
-	fn seal_and_import_block_internally<C>(&self, chain: &C, block: ClosedBlock) -> bool
-		where C: BlockChain + SealedBlockImporter,
+	fn seal_and_import_block_internally<C>(&self, chain: &C, block: ClosedBlock<B>) -> bool
+	where C: BlockChain + SealedBlockImporter + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = B> + ImportSealedBlock<ImportSealedBlockStateBackend = B>,
 	{
 		{
 			let sealing = self.sealing.lock();
@@ -682,7 +682,7 @@ impl Miner {
 	}
 
 	/// Prepares work which has to be done to seal.
-	fn prepare_work(&self, block: ClosedBlock, original_work_hash: Option<H256>) {
+	fn prepare_work(&self, block: ClosedBlock<B>, original_work_hash: Option<H256>) {
 		let (work, is_new) = {
 			let block_header = block.block().header().clone();
 			let block_hash = block_header.hash();
@@ -747,7 +747,7 @@ impl Miner {
 
 	/// Prepare a pending block. Returns the preparation status.
 	fn prepare_pending_block<C>(&self, client: &C) -> BlockPreparationStatus where
-		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync,
+		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B>,
 	{
 		trace!(target: "miner", "prepare_pending_block: entering");
 		let prepare_new = {
@@ -793,7 +793,7 @@ impl Miner {
 	}
 
 	/// Prepare pending block, check whether sealing is needed, and then update sealing.
-	fn prepare_and_update_sealing<C: miner::BlockChainClient>(&self, chain: &C) {
+	fn prepare_and_update_sealing<C: miner::BlockChainClient + PrepareOpenBlock<PrepareOpenBlockStateBackend = B> + ReopenBlock<ReopenBlockStateBackend = B> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = B> + ImportSealedBlock<ImportSealedBlockStateBackend = B>>(&self, chain: &C) {
 		use miner::MinerService;
 
 		// Make sure to do it after transaction is imported and lock is dropped.
@@ -809,8 +809,9 @@ impl Miner {
 
 const SEALING_TIMEOUT_IN_BLOCKS : u64 = 5;
 
-impl miner::MinerService for Miner {
-	type State = State<::state_db::StateDB>;
+impl<B: Backend + Clone + 'static> miner::MinerService for Miner<B> {
+	type State = State<B>;
+	type StateBackend = B;
 
 	fn authoring_params(&self) -> AuthoringParams {
 		self.params.read().clone()
@@ -859,7 +860,7 @@ impl miner::MinerService for Miner {
 		self.params.read().gas_range_target.0 / 5
 	}
 
-	fn import_external_transactions<C: miner::BlockChainClient>(
+	fn import_external_transactions<C: miner::BlockChainClient + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B> + ImportSealedBlock<ImportSealedBlockStateBackend = B> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = B>>(
 		&self,
 		chain: &C,
 		transactions: Vec<UnverifiedTransaction>
@@ -882,7 +883,7 @@ impl miner::MinerService for Miner {
 		results
 	}
 
-	fn import_own_transaction<C: miner::BlockChainClient>(
+	fn import_own_transaction<C: miner::BlockChainClient + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = B> + ImportSealedBlock<ImportSealedBlockStateBackend = B>>(
 		&self,
 		chain: &C,
 		pending: PendingTransaction
@@ -908,7 +909,7 @@ impl miner::MinerService for Miner {
 		imported
 	}
 
-	fn import_claimed_local_transaction<C: miner::BlockChainClient>(
+	fn import_claimed_local_transaction<C: miner::BlockChainClient + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = B> + ImportSealedBlock<ImportSealedBlockStateBackend = B>>(
 		&self,
 		chain: &C,
 		pending: PendingTransaction,
@@ -1076,7 +1077,7 @@ impl miner::MinerService for Miner {
 	/// Update sealing if required.
 	/// Prepare the block and work if the Engine does not seal internally.
 	fn update_sealing<C>(&self, chain: &C) where
-		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync,
+		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B> + ImportSealedBlock<ImportSealedBlockStateBackend = B> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = B>,
 	{
 		trace!(target: "miner", "update_sealing");
 
@@ -1130,7 +1131,7 @@ impl miner::MinerService for Miner {
 	}
 
 	fn work_package<C>(&self, chain: &C) -> Option<(H256, BlockNumber, u64, U256)> where
-		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync,
+		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B> + ImportSealedBlock<ImportSealedBlockStateBackend = B>,
 	{
 		if self.engine.seals_internally().is_some() {
 			return None;
@@ -1145,7 +1146,7 @@ impl miner::MinerService for Miner {
 	}
 
 	// Note used for external submission (PoW) and internally by sealing engines.
-	fn submit_seal(&self, block_hash: H256, seal: Vec<Bytes>) -> Result<SealedBlock, Error> {
+	fn submit_seal(&self, block_hash: H256, seal: Vec<Bytes>) -> Result<SealedBlock<B>, Error> {
 		let result =
 			if let Some(b) = self.sealing.lock().queue.get_used_if(
 				if self.options.enable_resubmission {
@@ -1173,8 +1174,7 @@ impl miner::MinerService for Miner {
 		})
 	}
 
-	fn chain_new_blocks<C>(&self, chain: &C, imported: &[H256], _invalid: &[H256], enacted: &[H256], retracted: &[H256], is_internal_import: bool)
-		where C: miner::BlockChainClient,
+	fn chain_new_blocks<C>(&self, chain: &C, imported: &[H256], _invalid: &[H256], enacted: &[H256], retracted: &[H256], is_internal_import: bool) where C: miner::BlockChainClient + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = B> + ImportSealedBlock<ImportSealedBlockStateBackend = B>
 	{
 		trace!(target: "miner", "chain_new_blocks");
 
@@ -1296,6 +1296,7 @@ mod tests {
 	use hash::keccak;
 	use header::BlockNumber;
 	use rustc_hex::FromHex;
+	use state_db::StateDB;
 
 	use client::{TestBlockChainClient, EachBlockWith, ChainInfo, ImportSealedBlock};
 	use miner::{MinerService, PendingOrdering};
@@ -1335,7 +1336,7 @@ mod tests {
 		assert!(miner.submit_seal(hash, vec![]).is_ok());
 	}
 
-	fn miner() -> Miner {
+	fn miner() -> Miner<StateDB> {
 		Miner::new(
 			MinerOptions {
 				force_sealing: false,

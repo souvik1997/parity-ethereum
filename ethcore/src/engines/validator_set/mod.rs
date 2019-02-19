@@ -31,6 +31,7 @@ use ethjson::spec::ValidatorSet as ValidatorSpec;
 use client::EngineClient;
 use header::{Header, BlockNumber};
 use machine::{AuxiliaryData, Call, EthereumMachine};
+use state::backend::Backend;
 
 #[cfg(test)]
 pub use self::test::TestSet;
@@ -41,7 +42,7 @@ use self::multi::Multi;
 use super::SystemCall;
 
 /// Creates a validator set from spec.
-pub fn new_validator_set(spec: ValidatorSpec) -> Box<ValidatorSet> {
+pub fn new_validator_set<B: Backend + Clone + 'static>(spec: ValidatorSpec) -> Box<ValidatorSet<MachineStateBackend = B>> {
 	match spec {
 		ValidatorSpec::List(list) => Box::new(SimpleList::new(list.into_iter().map(Into::into).collect())),
 		ValidatorSpec::SafeContract(address) => Box::new(ValidatorSafeContract::new(address.into())),
@@ -54,6 +55,7 @@ pub fn new_validator_set(spec: ValidatorSpec) -> Box<ValidatorSet> {
 
 /// A validator set.
 pub trait ValidatorSet: Send + Sync + 'static {
+	type MachineStateBackend: Backend + Clone;
 	/// Get the default "Call" helper, for use in general operation.
 	// TODO [keorn]: this is a hack intended to migrate off of
 	// a strict dependency on state always being available.
@@ -110,7 +112,7 @@ pub trait ValidatorSet: Send + Sync + 'static {
 		first: bool,
 		header: &Header,
 		aux: AuxiliaryData,
-	) -> ::engines::EpochChange<EthereumMachine>;
+	) -> ::engines::EpochChange<EthereumMachine<Self::MachineStateBackend>>;
 
 	/// Recover the validator set from the given proof, the block number, and
 	/// whether this header is first in its set.
@@ -120,8 +122,8 @@ pub trait ValidatorSet: Send + Sync + 'static {
 	///
 	/// Returns the set, along with a flag indicating whether finality of a specific
 	/// hash should be proven.
-	fn epoch_set(&self, first: bool, machine: &EthereumMachine, number: BlockNumber, proof: &[u8])
-		-> Result<(SimpleList, Option<H256>), ::error::Error>;
+	fn epoch_set(&self, first: bool, machine: &EthereumMachine<Self::MachineStateBackend>, number: BlockNumber, proof: &[u8])
+		-> Result<(SimpleList<Self::MachineStateBackend>, Option<H256>), ::error::Error>;
 
 	/// Checks if a given address is a validator, with the given function
 	/// for executing synchronous calls to contracts.
@@ -138,5 +140,5 @@ pub trait ValidatorSet: Send + Sync + 'static {
 	/// Notifies about benign misbehaviour.
 	fn report_benign(&self, _validator: &Address, _set_block: BlockNumber, _block: BlockNumber) {}
 	/// Allows blockchain state access.
-	fn register_client(&self, _client: Weak<EngineClient>) {}
+	fn register_client(&self, _client: Weak<EngineClient<StateBackend = Self::MachineStateBackend>>) {}
 }

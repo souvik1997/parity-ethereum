@@ -35,6 +35,7 @@ use ethtrie;
 use rlp::RlpStream;
 use hash::keccak;
 use machine::EthereumMachine as Machine;
+use state_db::StateDB;
 
 use super::HookType;
 
@@ -70,22 +71,22 @@ impl From<ethjson::vm::Call> for CallCreate {
 
 /// Tiny wrapper around executive externalities.
 /// Stores callcreates.
-struct TestExt<'a, T: 'a, V: 'a, B: 'a>
-	where T: Tracer, V: VMTracer, B: StateBackend
+struct TestExt<'a, T: 'a, V: 'a, B: 'a, G: 'static>
+	where T: Tracer, V: VMTracer, B: StateBackend, G: StateBackend + Clone
 {
-	ext: Externalities<'a, T, V, B>,
+	ext: Externalities<'a, T, V, B, G>,
 	callcreates: Vec<CallCreate>,
 	nonce: U256,
 	sender: Address,
 }
 
-impl<'a, T: 'a, V: 'a, B: 'a> TestExt<'a, T, V, B>
-	where T: Tracer, V: VMTracer, B: StateBackend,
+impl<'a, T: 'a, V: 'a, B: 'a, G: 'static> TestExt<'a, T, V, B, G>
+	where T: Tracer, V: VMTracer, B: StateBackend, G: StateBackend + Clone,
 {
 	fn new(
 		state: &'a mut State<B>,
 		info: &'a EnvInfo,
-		machine: &'a Machine,
+		machine: &'a Machine<G>,
 		schedule: &'a Schedule,
 		depth: usize,
 		origin_info: &'a OriginInfo,
@@ -105,8 +106,8 @@ impl<'a, T: 'a, V: 'a, B: 'a> TestExt<'a, T, V, B>
 	}
 }
 
-impl<'a, T: 'a, V: 'a, B: 'a> Ext for TestExt<'a, T, V, B>
-	where T: Tracer, V: VMTracer, B: StateBackend
+impl<'a, T: 'a, V: 'a, B: 'a, G: 'a> Ext for TestExt<'a, T, V, B, G>
+	where T: Tracer, V: VMTracer, B: StateBackend, G: StateBackend + Clone
 {
 	fn storage_at(&self, key: &H256) -> vm::Result<H256> {
 		self.ext.storage_at(key)
@@ -268,7 +269,7 @@ fn do_json_test_for<H: FnMut(&str, HookType)>(vm_type: &VMType, json_data: &[u8]
 		state.populate_from(From::from(vm.pre_state.clone()));
 		let info: EnvInfo = From::from(vm.env);
 		let machine = {
-			let mut machine = ::ethereum::new_frontier_test_machine();
+			let mut machine = ::ethereum::new_frontier_test_machine::<StateDB>();
 			machine.set_schedule_creation_rules(Box::new(move |s, _| s.max_depth = 1));
 			machine
 		};

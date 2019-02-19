@@ -18,10 +18,11 @@ use ethjson;
 use header::Header;
 use ethereum_types::U256;
 use spec::Spec;
+use state_db::StateDB;
 
 use super::HookType;
 
-pub fn json_difficulty_test<H: FnMut(&str, HookType)>(json_data: &[u8], spec: Spec, start_stop_hook: &mut H) -> Vec<String> {
+pub fn json_difficulty_test<H: FnMut(&str, HookType)>(json_data: &[u8], spec: Spec<StateDB>, start_stop_hook: &mut H) -> Vec<String> {
 	::ethcore_logger::init_log();
 	let tests = ethjson::test::DifficultyTest::load(json_data).unwrap();
 	let engine = &spec.engine;
@@ -110,4 +111,3 @@ mod difficulty_test_homestead {
 	difficulty_json_test_nopath!(new_homestead_test);
 	declare_test!{DifficultyTests_difficultyHomestead, "BasicTests/difficultyHomestead.json"}
 }
-

@@ -28,6 +28,7 @@ use ethcore::miner::{stratum, Miner, MinerService, MinerOptions};
 use ethcore::snapshot::{self, SnapshotConfiguration};
 use ethcore::spec::{SpecParams, OptimizeFor};
 use ethcore::verification::queue::VerifierSettings;
+use ethcore::state_db::StateDB;
 use ethcore_logger::{Config as LogConfig, RotatingLogger};
 use ethcore_service::ClientService;
 use ethereum_types::Address;
@@ -141,7 +142,7 @@ pub struct RunCmd {
 
 // node info fetcher for the local store.
 struct FullNodeInfo {
-	miner: Option<Arc<Miner>>, // TODO: only TXQ needed, just use that after decoupling.
+	miner: Option<Arc<Miner<StateDB>>>, // TODO: only TXQ needed, just use that after decoupling.
 }
 
 impl ::local_store::NodeInfo for FullNodeInfo {
@@ -581,7 +582,7 @@ fn execute_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq: 
 	// take handle to private transactions service
 	let private_tx_service = service.private_tx_service();
 	let private_tx_provider = private_tx_service.provider();
-	let connection_filter = connection_filter_address.map(|a| Arc::new(NodeFilter::new(Arc::downgrade(&client) as Weak<BlockChainClient>, a)));
+	let connection_filter = connection_filter_address.map(|a| Arc::new(NodeFilter::new(Arc::downgrade(&client) as Weak<BlockChainClient<StateBackend = StateDB>>, a)));
 	let snapshot_service = service.snapshot_service();
 
 	// initialize the local node information store.
@@ -702,7 +703,7 @@ fn execute_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq: 
 	// the updater service
 	let updater_fetch = fetch.clone();
 	let updater = Updater::new(
-		&Arc::downgrade(&(service.client() as Arc<BlockChainClient>)),
+		&Arc::downgrade(&(service.client() as Arc<BlockChainClient<StateBackend = StateDB>>)),
 		&Arc::downgrade(&sync_provider),
 		update_policy,
 		hash_fetch::Client::with_fetch(contract_client.clone(), updater_fetch, runtime.executor())
@@ -959,7 +960,7 @@ fn prepare_account_provider(spec: &SpecType, dirs: &Directories, data_dir: &str,
 		enable_hardware_wallets: cfg.enable_hardware_wallets,
 		hardware_wallet_classic_key: spec == &SpecType::Classic,
 		unlock_keep_secret: cfg.enable_fast_unlock,
-		blacklisted_accounts: 	match *spec {
+		blacklisted_accounts:		match *spec {
 			SpecType::Morden | SpecType::Ropsten | SpecType::Kovan | SpecType::Sokol | SpecType::Dev => vec![],
 			_ => vec![
 				"00a329c0648769a73afac7f9381e08fb43dbea72".into()

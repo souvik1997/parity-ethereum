@@ -162,7 +162,7 @@ pub struct Client {
 
 	chain: RwLock<Arc<BlockChain>>,
 	tracedb: RwLock<TraceDB<BlockChain>>,
-	engine: Arc<EthEngine>,
+	engine: Arc<EthEngine<StateDB>>,
 
 	/// Client configuration
 	config: ClientConfig,
@@ -218,19 +218,19 @@ pub struct Client {
 	import_lock: Mutex<()>, // FIXME Maybe wrap the whole `Importer` instead?
 
 	/// Used to verify blocks
-	verifier: Box<Verifier<Client>>,
+	verifier: Box<Verifier<Client, EngineStateBackend=StateDB>>,
 
 	/// Queue containing pending blocks
-	block_queue: BlockQueue,
+	block_queue: BlockQueue<StateDB>,
 
 	/// Ancient block verifier: import an ancient sequence of blocks in order from a starting epoch
-	ancient_verifier: AncientVerifier,
+	ancient_verifier: AncientVerifier<StateDB>,
 
 	/// A lru cache of recently detected bad blocks
 	bad_blocks: bad_blocks::BadBlocks,
 
 	/// Miner instance
-	miner: Arc<Miner>,
+	miner: Arc<Miner<StateDB>>,
 }
 
 impl Client {
@@ -238,9 +238,9 @@ impl Client {
 	/// The database is assumed to have been initialized with the correct columns.
 	pub fn new(
 		config: ClientConfig,
-		spec: &Spec,
+		spec: &Spec<StateDB>,
 		db: Arc<BlockChainDB>,
-		miner: Arc<Miner>,
+		miner: Arc<Miner<StateDB>>,
 		message_channel: IoChannel<ClientIoMessage>,
 	) -> Result<Arc<Client>, ::error::Error> {
 		let trie_spec = match config.fat_db {
@@ -400,7 +400,7 @@ impl Client {
 	}
 
 	/// Returns engine reference.
-	pub fn engine(&self) -> &EthEngine {
+	pub fn engine(&self) -> &EthEngine<StateDB> {
 		&*self.engine
 	}
 
@@ -535,7 +535,7 @@ impl Client {
 
 	/// Get shared miner reference.
 	#[cfg(test)]
-	pub fn miner(&self) -> Arc<Miner> {
+	pub fn miner(&self) -> Arc<Miner<StateDB>> {
 		self.miner.clone()
 	}
 
@@ -772,17 +772,17 @@ impl Client {
 		}.fake_sign(from)
 	}
 
-	fn do_virtual_call<B: Backend + Clone>(
-		machine: &::machine::EthereumMachine,
+	fn do_virtual_call<B: Backend + Clone, G: Backend + Clone>(
+		machine: &::machine::EthereumMachine<G>,
 		env_info: &EnvInfo,
 		state: &mut State<B>,
 		t: &SignedTransaction,
 		analytics: CallAnalytics,
 	) -> Result<Executed, CallError> {
-		fn call<V, T, B: Backend + Clone>(
+		fn call<V, T, B: Backend + Clone, G: Backend + Clone>(
 			state: &mut State<B>,
 			env_info: &EnvInfo,
-			machine: &::machine::EthereumMachine,
+			machine: &::machine::EthereumMachine<G>,
 			state_diff: bool,
 			transaction: &SignedTransaction,
 			options: TransactOptions<T, V>,
@@ -934,7 +934,7 @@ impl Client {
 		imported
 	}
 
-	fn check_and_lock_block(&self, block: PreverifiedBlock) -> EthcoreResult<LockedBlock> {
+	fn check_and_lock_block(&self, block: PreverifiedBlock) -> EthcoreResult<LockedBlock<StateDB>> {
 		let engine = &*self.engine;
 		let header = block.header.clone();
 
@@ -1050,7 +1050,7 @@ impl Client {
 	// it is for reconstructing the state transition.
 	//
 	// The header passed is from the original block data and is sealed.
-	fn commit_block<B>(&self, block: B, header: &Header, block_data: encoded::Block) -> ImportRoute where B: Drain {
+	fn commit_block<B>(&self, block: B, header: &Header, block_data: encoded::Block) -> ImportRoute where B: Drain<StateDB> {
 		let hash = &header.hash();
 		let number = header.number();
 		let parent = header.parent_hash();
@@ -1568,7 +1568,8 @@ impl Call for Client {
 }
 
 impl EngineInfo for Client {
-	fn engine(&self) -> &EthEngine {
+	type EngineStateBackend = StateDB;
+	fn engine(&self) -> &EthEngine<StateDB> {
 		Client::engine(self)
 	}
 }
@@ -1580,6 +1581,7 @@ impl BadBlocks for Client {
 }
 
 impl BlockChainClient for Client {
+	type StateBackend = StateDB;
 	fn replay(&self, id: TransactionId, analytics: CallAnalytics) -> Result<Executed, CallError> {
 		let address = self.transaction_address(id).ok_or(CallError::TransactionNotFound)?;
 		let block = BlockId::Hash(address.block_hash);
@@ -2212,7 +2214,8 @@ impl IoClient for Client {
 }
 
 impl ReopenBlock for Client {
-	fn reopen_block(&self, block: ClosedBlock) -> OpenBlock {
+	type ReopenBlockStateBackend = StateDB;
+	fn reopen_block(&self, block: ClosedBlock<StateDB>) -> OpenBlock<StateDB> {
 		let engine = &*self.engine;
 		let mut block = block.reopen(engine);
 		let max_uncles = engine.maximum_uncle_count(block.header().number());
@@ -2242,7 +2245,9 @@ impl ReopenBlock for Client {
 }
 
 impl PrepareOpenBlock for Client {
-	fn prepare_open_block(&self, author: Address, gas_range_target: (U256, U256), extra_data: Bytes) -> Result<OpenBlock, EthcoreError> {
+	type PrepareOpenBlockStateBackend = StateDB;
+
+	fn prepare_open_block(&self, author: Address, gas_range_target: (U256, U256), extra_data: Bytes) -> Result<OpenBlock<StateDB>, EthcoreError> {
 		let engine = &*self.engine;
 		let chain = self.chain.read();
 		let best_header = chain.best_block_header();
@@ -2290,7 +2295,8 @@ impl ScheduleInfo for Client {
 }
 
 impl ImportSealedBlock for Client {
-	fn import_sealed_block(&self, block: SealedBlock) -> EthcoreResult<H256> {
+	type ImportSealedBlockStateBackend = StateDB;
+	fn import_sealed_block(&self, block: SealedBlock<StateDB>) -> EthcoreResult<H256> {
 		let start = Instant::now();
 		let raw = block.rlp_bytes();
 		let header = block.header().clone();
@@ -2346,7 +2352,8 @@ impl ImportSealedBlock for Client {
 }
 
 impl BroadcastProposalBlock for Client {
-	fn broadcast_proposal_block(&self, block: SealedBlock) {
+	type BroadcastProposalBlockStateBackend = StateDB;
+	fn broadcast_proposal_block(&self, block: SealedBlock<StateDB>) {
 		const DURATION_ZERO: Duration = Duration::from_millis(0);
 		self.notify(|notify| {
 			notify.new_blocks(
@@ -2370,6 +2377,7 @@ impl ::miner::TransactionVerifierClient for Client {}
 impl ::miner::BlockChainClient for Client {}
 
 impl super::traits::EngineClient for Client {
+	type StateBackend = StateDB;
 	fn update_sealing(&self) {
 		self.miner.update_sealing(self)
 	}
@@ -2389,14 +2397,14 @@ impl super::traits::EngineClient for Client {
 		self.chain.read().epoch_transition_for(parent_hash)
 	}
 
-	fn as_full_client(&self) -> Option<&BlockChainClient> { Some(self) }
+	fn as_full_client(&self) -> Option<&BlockChainClient<StateBackend = StateDB>> { Some(self) }
 
 	fn block_number(&self, id: BlockId) -> Option<BlockNumber> {
 		BlockChainClient::block_number(self, id)
 	}
 
 	fn block_header(&self, id: BlockId) -> Option<::encoded::Header> {
-		BlockChainClient::block_header(self, id)
+		BlockChainClient::<StateBackend = StateDB>::block_header(self, id)
 	}
 }
 
@@ -2483,8 +2491,8 @@ impl Drop for Client {
 
 /// Returns `LocalizedReceipt` given `LocalizedTransaction`
 /// and a vector of receipts from given block up to transaction index.
-fn transaction_receipt(
-	machine: &::machine::EthereumMachine,
+fn transaction_receipt<B: Backend + Clone>(
+	machine: &::machine::EthereumMachine<B>,
 	mut tx: LocalizedTransaction,
 	receipt: Receipt,
 	prior_gas_used: U256,
@@ -2606,7 +2614,7 @@ mod tests {
 		// given
 		let key = KeyPair::from_secret_slice(&keccak("test")).unwrap();
 		let secret = key.secret();
-		let machine = ::ethereum::new_frontier_test_machine();
+		let machine = ::ethereum::new_frontier_test_machine::<::state_db::StateDB>();
 
 		let block_number = 1;
 		let block_hash = 5.into();

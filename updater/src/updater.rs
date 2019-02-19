@@ -28,6 +28,7 @@ use target_info::Target;
 use ethcore::BlockNumber;
 use ethcore::client::{BlockId, BlockChainClient, ChainNotify, NewBlocks};
 use ethcore::filter::Filter;
+use ethcore::state_db::StateDB;
 use ethereum_types::H256;
 use hash_fetch::{self as fetch, HashFetch};
 use parity_path::restrict_permissions_owner;
@@ -140,7 +141,7 @@ pub struct Updater<O = OperationsContractClient, F = fetch::Client, T = StdTimeP
 	// Useful environmental stuff.
 	update_policy: UpdatePolicy,
 	weak_self: Mutex<Weak<Updater<O, F, T, R>>>,
-	client: Weak<BlockChainClient>,
+	client: Weak<BlockChainClient<StateBackend = StateDB>>,
 	sync: Option<Weak<SyncProvider>>,
 	fetcher: F,
 	operations_client: O,
@@ -192,11 +193,11 @@ pub trait OperationsClient: Send + Sync + 'static {
 
 /// `OperationsClient` that delegates calls to the operations contract.
 pub struct OperationsContractClient {
-	client: Weak<BlockChainClient>,
+	client: Weak<BlockChainClient<StateBackend = StateDB>>,
 }
 
 impl OperationsContractClient {
-	fn new(client: Weak<BlockChainClient>) -> Self {
+	fn new(client: Weak<BlockChainClient<StateBackend = StateDB>>) -> Self {
 		OperationsContractClient {
 			client
 		}
@@ -355,7 +356,7 @@ impl GenRange for ThreadRngGenRange {
 impl Updater {
 	/// `Updater` constructor
 	pub fn new(
-		client: &Weak<BlockChainClient>,
+		client: &Weak<BlockChainClient<StateBackend = StateDB>>,
 		sync: &Weak<SyncProvider>,
 		update_policy: UpdatePolicy,
 		fetcher: fetch::Client,
@@ -604,7 +605,7 @@ impl<O: OperationsClient, F: HashFetch, T: TimeProvider, R: GenRange> Updater<O,
 		// We rely on a secure state. Bail if we're unsure about it.
 		if !cfg!(feature = "test-updater") {
 			if self.client.upgrade().map_or(true, |c| !c.chain_info().security_level().is_full()) {
-			    return;
+					return;
 			}
 		}
 

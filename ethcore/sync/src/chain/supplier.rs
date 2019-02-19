@@ -341,6 +341,7 @@ mod test {
 	use parking_lot::RwLock;
 	use bytes::Bytes;
 	use rlp::{Rlp, RlpStream};
+	use ethcore::state_db::StateDB;
 	use super::{*, super::tests::*};
 	use blocks::SyncHeader;
 	use ethcore::client::{BlockChainClient, EachBlockWith, TestBlockChainClient};
@@ -371,7 +372,7 @@ mod test {
 		let mut client = TestBlockChainClient::new();
 		client.add_blocks(100, EachBlockWith::Nothing);
 		let blocks: Vec<_> = (0 .. 100)
-			.map(|i| (&client as &BlockChainClient).block(BlockId::Number(i as BlockNumber)).map(|b| b.into_inner()).unwrap()).collect();
+			.map(|i| (&client as &BlockChainClient<StateBackend = StateDB>).block(BlockId::Number(i as BlockNumber)).map(|b| b.into_inner()).unwrap()).collect();
 		let headers: Vec<_> = blocks.iter().map(|b| SyncHeader::from_rlp(Rlp::new(b).at(0).unwrap().as_raw().to_vec()).unwrap()).collect();
 		let hashes: Vec<_> = headers.iter().map(|h| h.header.hash()).collect();
 

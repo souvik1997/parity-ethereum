@@ -30,6 +30,7 @@ use engines::{self, Engine};
 use ethjson;
 use rlp::Rlp;
 use machine::EthereumMachine;
+use state::backend::Backend;
 
 /// Number of blocks in an ethash snapshot.
 // make dependent on difficulty incrment divisor?
@@ -165,18 +166,18 @@ impl From<ethjson::spec::EthashParams> for EthashParams {
 
 /// Engine using Ethash proof-of-work consensus algorithm, suitable for Ethereum
 /// mainnet chains in the Olympic, Frontier and Homestead eras.
-pub struct Ethash {
+pub struct Ethash<B: Backend + Clone> {
 	ethash_params: EthashParams,
 	pow: EthashManager,
-	machine: EthereumMachine,
+	machine: EthereumMachine<B>,
 }
 
-impl Ethash {
+impl<B: Backend + Clone> Ethash<B> {
 	/// Create a new instance of Ethash engine
 	pub fn new<T: Into<Option<OptimizeFor>>>(
 		cache_dir: &Path,
 		ethash_params: EthashParams,
-		machine: EthereumMachine,
+		machine: EthereumMachine<B>,
 		optimize_for: T,
 	) -> Arc<Self> {
 		Arc::new(Ethash {
@@ -195,16 +196,16 @@ impl Ethash {
 // for any block in the chain.
 // in the future, we might move the Ethash epoch
 // caching onto this mechanism as well.
-impl engines::EpochVerifier<EthereumMachine> for Arc<Ethash> {
+impl<B: Backend + Clone + 'static> engines::EpochVerifier<EthereumMachine<B>> for Arc<Ethash<B>> {
 	fn verify_light(&self, _header: &Header) -> Result<(), Error> { Ok(()) }
 	fn verify_heavy(&self, header: &Header) -> Result<(), Error> {
 		self.verify_block_unordered(header)
 	}
 }
 
-impl Engine<EthereumMachine> for Arc<Ethash> {
+impl<B: Backend + Clone + 'static> Engine<EthereumMachine<B>> for Arc<Ethash<B>> {
 	fn name(&self) -> &str { "Ethash" }
-	fn machine(&self) -> &EthereumMachine { &self.machine }
+	fn machine(&self) -> &EthereumMachine<B> { &self.machine }
 
 	// Two fields - nonce and mix.
 	fn seal_fields(&self, _header: &Header) -> usize { 2 }
@@ -231,7 +232,7 @@ impl Engine<EthereumMachine> for Arc<Ethash> {
 
 	/// Apply the block reward on finalisation of the block.
 	/// This assumes that all uncles are valid uncles (i.e. of at least one generation before the current).
-	fn on_close_block(&self, block: &mut ExecutedBlock) -> Result<(), Error> {
+	fn on_close_block(&self, block: &mut ExecutedBlock<B>) -> Result<(), Error> {
 		use std::ops::Shr;
 		use parity_machine::LiveBlock;
 
@@ -334,12 +335,12 @@ impl Engine<EthereumMachine> for Arc<Ethash> {
 		let mix = H256(result.mix_hash);
 		let difficulty = ethash::boundary_to_difficulty(&H256(result.value));
 		trace!(target: "miner", "num: {num}, seed: {seed}, h: {h}, non: {non}, mix: {mix}, res: {res}",
-			   num = header.number() as u64,
-			   seed = H256(slow_hash_block_number(header.number() as u64)),
-			   h = header.bare_hash(),
-			   non = seal.nonce.low_u64(),
-			   mix = H256(result.mix_hash),
-			   res = H256(result.value));
+				 num = header.number() as u64,
+				 seed = H256(slow_hash_block_number(header.number() as u64)),
+				 h = header.bare_hash(),
+				 non = seal.nonce.low_u64(),
+				 mix = H256(result.mix_hash),
+				 res = H256(result.value));
 		if mix != seal.mix_hash {
 			return Err(From::from(BlockError::MismatchedH256SealElement(Mismatch { expected: mix, found: seal.mix_hash })));
 		}
@@ -364,11 +365,11 @@ impl Engine<EthereumMachine> for Arc<Ethash> {
 		Ok(())
 	}
 
-	fn epoch_verifier<'a>(&self, _header: &Header, _proof: &'a [u8]) -> engines::ConstructedVerifier<'a, EthereumMachine> {
+	fn epoch_verifier<'a>(&self, _header: &Header, _proof: &'a [u8]) -> engines::ConstructedVerifier<'a, EthereumMachine<B>> {
 		engines::ConstructedVerifier::Trusted(Box::new(self.clone()))
 	}
 
-	fn snapshot_components(&self) -> Option<Box<::snapshot::SnapshotComponents>> {
+	fn snapshot_components(&self) -> Option<Box<::snapshot::SnapshotComponents<StateBackend = B>>> {
 		Some(Box::new(::snapshot::PowSnapshot::new(SNAPSHOT_BLOCKS, MAX_SNAPSHOT_BLOCKS)))
 	}
 
@@ -377,7 +378,7 @@ impl Engine<EthereumMachine> for Arc<Ethash> {
 	}
 }
 
-impl Ethash {
+impl<B: Backend + Clone> Ethash<B> {
 	fn calculate_difficulty(&self, header: &Header, parent: &Header) -> U256 {
 		const EXP_DIFF_PERIOD: u64 = 100_000;
 		if header.number() == 0 {
@@ -485,12 +486,13 @@ mod tests {
 	use header::Header;
 	use spec::Spec;
 	use engines::Engine;
+	use state_db::StateDB;
 	use super::super::{new_morden, new_mcip3_test, new_homestead_test_machine};
 	use super::{Ethash, EthashParams, ecip1017_eras_block_reward};
 	use rlp;
 	use tempdir::TempDir;
 
-	fn test_spec() -> Spec {
+	fn test_spec() -> Spec<StateDB> {
 		let tempdir = TempDir::new("").unwrap();
 		new_morden(&tempdir.path())
 	}
@@ -757,7 +759,7 @@ mod tests {
 
 	#[test]
 	fn difficulty_frontier() {
-		let machine = new_homestead_test_machine();
+		let machine = new_homestead_test_machine::<StateDB>();
 		let ethparams = get_default_ethash_params();
 		let tempdir = TempDir::new("").unwrap();
 		let ethash = Ethash::new(tempdir.path(), ethparams, machine, None);
@@ -776,7 +778,7 @@ mod tests {
 
 	#[test]
 	fn difficulty_homestead() {
-		let machine = new_homestead_test_machine();
+		let machine = new_homestead_test_machine::<StateDB>();
 		let ethparams = get_default_ethash_params();
 		let tempdir = TempDir::new("").unwrap();
 		let ethash = Ethash::new(tempdir.path(), ethparams, machine, None);
@@ -795,7 +797,7 @@ mod tests {
 
 	#[test]
 	fn difficulty_classic_bomb_delay() {
-		let machine = new_homestead_test_machine();
+		let machine = new_homestead_test_machine::<StateDB>();
 		let ethparams = EthashParams {
 			ecip1010_pause_transition: 3000000,
 			..get_default_ethash_params()
@@ -829,7 +831,7 @@ mod tests {
 
 	#[test]
 	fn test_difficulty_bomb_continue() {
-		let machine = new_homestead_test_machine();
+		let machine = new_homestead_test_machine::<StateDB>();
 		let ethparams = EthashParams {
 			ecip1010_pause_transition: 3000000,
 			ecip1010_continue_transition: 5000000,
@@ -880,7 +882,7 @@ mod tests {
 
 	#[test]
 	fn difficulty_max_timestamp() {
-		let machine = new_homestead_test_machine();
+		let machine = new_homestead_test_machine::<StateDB>();
 		let ethparams = get_default_ethash_params();
 		let tempdir = TempDir::new("").unwrap();
 		let ethash = Ethash::new(tempdir.path(), ethparams, machine, None);
@@ -899,7 +901,7 @@ mod tests {
 
 	#[test]
 	fn test_extra_info() {
-		let machine = new_homestead_test_machine();
+		let machine = new_homestead_test_machine::<StateDB>();
 		let ethparams = get_default_ethash_params();
 		let tempdir = TempDir::new("").unwrap();
 		let ethash = Ethash::new(tempdir.path(), ethparams, machine, None);

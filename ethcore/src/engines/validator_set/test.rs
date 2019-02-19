@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use heapsize::HeapSizeOf;
 use ethereum_types::{H256, Address};
 use bytes::Bytes;
+use state_db::StateDB;
 
 use machine::{AuxiliaryData, Call, EthereumMachine};
 use header::{Header, BlockNumber};
@@ -29,7 +30,7 @@ use super::{ValidatorSet, SimpleList};
 
 /// Set used for testing with a single validator.
 pub struct TestSet {
-	validator: SimpleList,
+	validator: SimpleList<StateDB>,
 	last_malicious: Arc<AtomicUsize>,
 	last_benign: Arc<AtomicUsize>,
 }
@@ -57,6 +58,8 @@ impl HeapSizeOf for TestSet {
 }
 
 impl ValidatorSet for TestSet {
+	type MachineStateBackend = StateDB;
+
 	fn default_caller(&self, _block_id: ::ids::BlockId) -> Box<Call> {
 		Box::new(|_, _| Err("Test set doesn't require calls.".into()))
 	}
@@ -64,12 +67,12 @@ impl ValidatorSet for TestSet {
 	fn is_epoch_end(&self, _first: bool, _chain_head: &Header) -> Option<Vec<u8>> { None }
 
 	fn signals_epoch_end(&self, _: bool, _: &Header, _: AuxiliaryData)
-		-> ::engines::EpochChange<EthereumMachine>
+		-> ::engines::EpochChange<EthereumMachine<StateDB>>
 	{
 		::engines::EpochChange::No
 	}
 
-	fn epoch_set(&self, _: bool, _: &EthereumMachine, _: BlockNumber, _: &[u8]) -> Result<(SimpleList, Option<H256>), ::error::Error> {
+	fn epoch_set(&self, _: bool, _: &EthereumMachine<StateDB>, _: BlockNumber, _: &[u8]) -> Result<(SimpleList<StateDB>, Option<H256>), ::error::Error> {
 		Ok((self.validator.clone(), None))
 	}
 

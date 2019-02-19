@@ -16,24 +16,29 @@
 
 /// Preconfigured validator list.
 
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 use heapsize::HeapSizeOf;
 use ethereum_types::{H256, Address};
 
 use machine::{AuxiliaryData, Call, EthereumMachine};
 use header::{BlockNumber, Header};
+use state::backend::Backend;
 use super::ValidatorSet;
 
 /// Validator set containing a known set of addresses.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct SimpleList {
+pub struct SimpleList<B> {
 	validators: Vec<Address>,
+	_phantom: SafePhantomData<B>
 }
 
-impl SimpleList {
+impl<B> SimpleList<B> {
 	/// Create a new `SimpleList`.
 	pub fn new(validators: Vec<Address>) -> Self {
 		SimpleList {
 			validators: validators,
+			_phantom: PhantomData
 		}
 	}
 
@@ -43,27 +48,29 @@ impl SimpleList {
 	}
 }
 
-impl ::std::ops::Deref for SimpleList {
+impl<B> ::std::ops::Deref for SimpleList<B> {
 	type Target = [Address];
 
 	fn deref(&self) -> &[Address] { &self.validators }
 }
 
-impl From<Vec<Address>> for SimpleList {
+impl<B> From<Vec<Address>> for SimpleList<B> {
 	fn from(validators: Vec<Address>) -> Self {
 		SimpleList {
 			validators: validators,
+			_phantom: PhantomData
 		}
 	}
 }
 
-impl HeapSizeOf for SimpleList {
+impl<B> HeapSizeOf for SimpleList<B> {
 	fn heap_size_of_children(&self) -> usize {
 		self.validators.heap_size_of_children()
 	}
 }
 
-impl ValidatorSet for SimpleList {
+impl<B: Backend + Clone + 'static> ValidatorSet for SimpleList<B> {
+	type MachineStateBackend = B;
 	fn default_caller(&self, _block_id: ::ids::BlockId) -> Box<Call> {
 		Box::new(|_, _| Err("Simple list doesn't require calls.".into()))
 	}
@@ -76,12 +83,12 @@ impl ValidatorSet for SimpleList {
 	}
 
 	fn signals_epoch_end(&self, _: bool, _: &Header, _: AuxiliaryData)
-		-> ::engines::EpochChange<EthereumMachine>
+		-> ::engines::EpochChange<EthereumMachine<B>>
 	{
 		::engines::EpochChange::No
 	}
 
-	fn epoch_set(&self, _first: bool, _: &EthereumMachine, _: BlockNumber, _: &[u8]) -> Result<(SimpleList, Option<H256>), ::error::Error> {
+	fn epoch_set(&self, _first: bool, _: &EthereumMachine<B>, _: BlockNumber, _: &[u8]) -> Result<(SimpleList<B>, Option<H256>), ::error::Error> {
 		Ok((self.clone(), None))
 	}
 
@@ -104,14 +111,15 @@ impl ValidatorSet for SimpleList {
 	}
 }
 
-impl AsRef<ValidatorSet> for SimpleList {
-    fn as_ref(&self) -> &ValidatorSet {
-        self
-    }
+impl<B: Backend + Clone + 'static> AsRef<ValidatorSet<MachineStateBackend = B>> for SimpleList<B> {
+		fn as_ref(&self) -> &ValidatorSet<MachineStateBackend = B> {
+				self
+		}
 }
 
 #[cfg(test)]
 mod tests {
+	use state_db::StateDB;
 	use std::str::FromStr;
 	use ethereum_types::Address;
 	use super::super::ValidatorSet;
@@ -121,7 +129,7 @@ mod tests {
 	fn simple_list() {
 		let a1 = Address::from_str("cd1722f3947def4cf144679da39c4c32bdc35681").unwrap();
 		let a2 = Address::from_str("0f572e5295c57f15886f9b263e2f6d2d6c7b5ec6").unwrap();
-		let list = SimpleList::new(vec![a1.clone(), a2.clone()]);
+		let list = SimpleList::<StateDB>::new(vec![a1.clone(), a2.clone()]);
 		assert!(list.contains(&Default::default(), &a1));
 		assert_eq!(list.get(&Default::default(), 0), a1);
 		assert_eq!(list.get(&Default::default(), 1), a2);
