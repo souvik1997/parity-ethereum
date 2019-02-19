@@ -37,6 +37,7 @@ use ethcore::error::{Error, EthcoreResult, ErrorKind as EthcoreErrorKind, BlockE
 use ethcore::header::Header;
 use ethcore::ids::BlockId;
 use ethcore::spec::{Spec, SpecHardcodedSync};
+use ethcore::state_db::StateDB;
 use ethereum_types::{H256, H264, U256};
 use heapsize::HeapSizeOf;
 use kvdb::{DBTransaction, KeyValueDB};
@@ -212,7 +213,7 @@ impl HeaderChain {
 	pub fn new(
 		db: Arc<KeyValueDB>,
 		col: Option<u32>,
-		spec: &Spec,
+		spec: &Spec<StateDB>,
 		cache: Arc<Mutex<Cache>>,
 		allow_hs: HardcodedSync,
 	) -> Result<Self, Error> {

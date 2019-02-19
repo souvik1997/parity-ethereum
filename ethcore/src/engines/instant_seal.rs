@@ -49,9 +49,9 @@ impl<M> InstantSeal<M> {
 }
 
 impl<M: Machine> Engine<M> for InstantSeal<M>
-  where M::LiveBlock: Transactions,
-        M::ExtendedHeader: TotalScoredHeader,
-        <M::ExtendedHeader as TotalScoredHeader>::Value: Ord
+	where M::LiveBlock: Transactions,
+				M::ExtendedHeader: TotalScoredHeader,
+				<M::ExtendedHeader as TotalScoredHeader>::Value: Ord
 {
 	fn name(&self) -> &str {
 		"InstantSeal"
@@ -98,10 +98,11 @@ mod tests {
 	use header::Header;
 	use block::*;
 	use engines::Seal;
+	use state_db::StateDB;
 
 	#[test]
 	fn instant_can_seal() {
-		let spec = Spec::new_instant();
+		let spec = Spec::<StateDB>::new_instant();
 		let engine = &*spec.engine;
 		let db = spec.ensure_db_good(get_temp_state_db(), &Default::default()).unwrap();
 		let genesis_header = spec.genesis_header();
@@ -115,7 +116,7 @@ mod tests {
 
 	#[test]
 	fn instant_cant_verify() {
-		let engine = Spec::new_instant().engine;
+		let engine = Spec::<StateDB>::new_instant().engine;
 		let mut header: Header = Header::default();
 
 		assert!(engine.verify_block_basic(&header).is_ok());

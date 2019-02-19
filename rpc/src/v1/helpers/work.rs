@@ -26,7 +26,7 @@ use v1::types::{H64, H256};
 use v1::helpers::errors;
 
 // Submit a POW work and return the block's hash
-pub fn submit_work_detail<C: BlockChainClient, M: MinerService>(client: &Arc<C>, miner: &Arc<M>, nonce: H64, pow_hash: H256, mix_hash: H256) -> Result<H256, Error> {
+pub fn submit_work_detail<C: BlockChainClient, M: MinerService>(client: &Arc<C>, miner: &Arc<M>, nonce: H64, pow_hash: H256, mix_hash: H256) -> Result<H256, Error> where C: BlockChainClient<ImportSealedBlockStateBackend = M::StateBackend> {
 	// TODO [ToDr] Should disallow submissions in case of PoA?
 	let nonce: EthcoreH64 = nonce.into();
 	let pow_hash: EthcoreH256 = pow_hash.into();

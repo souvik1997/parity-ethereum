@@ -49,7 +49,7 @@ use docopt::Docopt;
 use rustc_hex::FromHex;
 use ethereum_types::{U256, Address};
 use bytes::Bytes;
-use ethcore::{spec, json_tests};
+use ethcore::{spec, json_tests, state_db::StateDB};
 use vm::{ActionParams, CallType};
 
 mod info;
@@ -59,38 +59,38 @@ use info::Informant;
 
 const USAGE: &'static str = r#"
 EVM implementation for Parity.
-  Copyright 2015-2018 Parity Technologies (UK) Ltd.
+	Copyright 2015-2018 Parity Technologies (UK) Ltd.
 
 Usage:
-    parity-evm state-test <file> [--json --std-json --only NAME --chain CHAIN]
-    parity-evm stats [options]
-    parity-evm stats-jsontests-vm <file>
-    parity-evm [options]
-    parity-evm [-h | --help]
+		parity-evm state-test <file> [--json --std-json --only NAME --chain CHAIN]
+		parity-evm stats [options]
+		parity-evm stats-jsontests-vm <file>
+		parity-evm [options]
+		parity-evm [-h | --help]
 
 Commands:
-    state-test         Run a state test from a json file.
-    stats              Execute EVM runtime code and return the statistics.
-    stats-jsontests-vm Execute standard json-tests format VMTests and return
-                       timing statistics in tsv format.
+		state-test         Run a state test from a json file.
+		stats              Execute EVM runtime code and return the statistics.
+		stats-jsontests-vm Execute standard json-tests format VMTests and return
+											 timing statistics in tsv format.
 
 Transaction options:
-    --code CODE        Contract code as hex (without 0x).
-    --to ADDRESS       Recipient address (without 0x).
-    --from ADDRESS     Sender address (without 0x).
-    --input DATA       Input data as hex (without 0x).
-    --gas GAS          Supplied gas as hex (without 0x).
-    --gas-price WEI    Supplied gas price as hex (without 0x).
+		--code CODE        Contract code as hex (without 0x).
+		--to ADDRESS       Recipient address (without 0x).
+		--from ADDRESS     Sender address (without 0x).
+		--input DATA       Input data as hex (without 0x).
+		--gas GAS          Supplied gas as hex (without 0x).
+		--gas-price WEI    Supplied gas price as hex (without 0x).
 
 State test options:
-    --only NAME        Runs only a single test matching the name.
-    --chain CHAIN      Run only tests from specific chain.
+		--only NAME        Runs only a single test matching the name.
+		--chain CHAIN      Run only tests from specific chain.
 
 General options:
-    --json             Display verbose results in JSON.
-    --std-json         Display results in standardized JSON format.
-    --chain CHAIN      Chain spec file path.
-    -h, --help         Display this message and exit.
+		--json             Display verbose results in JSON.
+		--std-json         Display results in standardized JSON format.
+		--chain CHAIN      Chain spec file path.
+		-h, --help         Display this message and exit.
 "#;
 
 fn main() {
@@ -283,7 +283,7 @@ impl Args {
 		}
 	}
 
-	pub fn spec(&self) -> Result<spec::Spec, String> {
+	pub fn spec(&self) -> Result<spec::Spec<StateDB>, String> {
 		Ok(match self.flag_chain {
 			Some(ref filename) =>  {
 				let file = fs::File::open(filename).map_err(|e| format!("{}", e))?;

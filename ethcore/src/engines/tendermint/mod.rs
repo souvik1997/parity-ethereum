@@ -28,6 +28,8 @@ mod params;
 use std::sync::{Weak, Arc};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::collections::HashSet;
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 use hash::keccak;
 use ethereum_types::{H256, H520, U128, U256, Address};
 use parking_lot::RwLock;
@@ -50,6 +52,7 @@ use super::vote_collector::VoteCollector;
 use self::message::*;
 use self::params::TendermintParams;
 use machine::{AuxiliaryData, EthereumMachine};
+use state::backend::Backend;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Step {
@@ -73,9 +76,9 @@ pub type View = usize;
 pub type BlockHash = H256;
 
 /// Engine using `Tendermint` consensus algorithm, suitable for EVM chain.
-pub struct Tendermint {
+pub struct Tendermint<B: Backend + Clone> {
 	step_service: IoService<Step>,
-	client: RwLock<Option<Weak<EngineClient>>>,
+	client: RwLock<Option<Weak<EngineClient<StateBackend = B>>>>,
 	/// Blockchain height.
 	height: AtomicUsize,
 	/// Consensus view.
@@ -97,21 +100,22 @@ pub struct Tendermint {
 	/// Last block proposed by this validator.
 	last_proposed: RwLock<H256>,
 	/// Set used to determine the current validators.
-	validators: Box<ValidatorSet>,
+	validators: Box<ValidatorSet<MachineStateBackend = B>>,
 	/// Reward per block, in base units.
 	block_reward: U256,
 	/// ethereum machine descriptor
-	machine: EthereumMachine,
+	machine: EthereumMachine<B>,
 }
 
-struct EpochVerifier<F>
+struct EpochVerifier<F, B>
 	where F: Fn(&Signature, &Message) -> Result<Address, Error> + Send + Sync
 {
-	subchain_validators: SimpleList,
-	recover: F
+	subchain_validators: SimpleList<B>,
+	recover: F,
+	_phantom: SafePhantomData<B>,
 }
 
-impl <F> super::EpochVerifier<EthereumMachine> for EpochVerifier<F>
+impl <F, B: Backend + Clone + 'static> super::EpochVerifier<EthereumMachine<B>> for EpochVerifier<F, B>
 	where F: Fn(&Signature, &Message) -> Result<Address, Error> + Send + Sync
 {
 	fn verify_light(&self, header: &Header) -> Result<(), Error> {
@@ -165,9 +169,9 @@ fn destructure_proofs(combined: &[u8]) -> Result<(BlockNumber, &[u8], &[u8]), Er
 	))
 }
 
-impl Tendermint {
+impl<B: Backend + Clone + 'static> Tendermint<B> {
 	/// Create a new instance of Tendermint engine
-	pub fn new(our_params: TendermintParams, machine: EthereumMachine) -> Result<Arc<Self>, Error> {
+	pub fn new(our_params: TendermintParams<B>, machine: EthereumMachine<B>) -> Result<Arc<Self>, Error> {
 		let engine = Arc::new(
 			Tendermint {
 				client: RwLock::new(None),
@@ -439,13 +443,13 @@ impl Tendermint {
 	}
 }
 
-impl Engine<EthereumMachine> for Tendermint {
+impl<B: Backend + Clone + 'static> Engine<EthereumMachine<B>> for Tendermint<B> {
 	fn name(&self) -> &str { "Tendermint" }
 
 	/// (consensus view, proposal signature, authority signatures)
 	fn seal_fields(&self, _header: &Header) -> usize { 3 }
 
-	fn machine(&self) -> &EthereumMachine { &self.machine }
+	fn machine(&self) -> &EthereumMachine<B> { &self.machine }
 
 	fn maximum_uncle_count(&self, _block: BlockNumber) -> usize { 0 }
 
@@ -469,7 +473,7 @@ impl Engine<EthereumMachine> for Tendermint {
 	///
 	/// This operation is synchronous and may (quite reasonably) not be available, in which case
 	/// `Seal::None` will be returned.
-	fn generate_seal(&self, block: &ExecutedBlock, _parent: &Header) -> Seal {
+	fn generate_seal(&self, block: &ExecutedBlock<B>, _parent: &Header) -> Seal {
 		let header = block.header();
 		let author = header.author();
 		// Only proposer can generate seal if None was generated.
@@ -529,7 +533,7 @@ impl Engine<EthereumMachine> for Tendermint {
 		Ok(())
 	}
 
-	fn on_new_block(&self, block: &mut ExecutedBlock, epoch_begin: bool, _ancestry: &mut Iterator<Item=ExtendedHeader>) -> Result<(), Error> {
+	fn on_new_block(&self, block: &mut ExecutedBlock<B>, epoch_begin: bool, _ancestry: &mut Iterator<Item=ExtendedHeader>) -> Result<(), Error> {
 		if !epoch_begin { return Ok(()) }
 
 		// genesis is never a new block, but might as well check.
@@ -551,7 +555,7 @@ impl Engine<EthereumMachine> for Tendermint {
 	}
 
 	/// Apply the block reward on finalisation of the block.
-	fn on_close_block(&self, block: &mut ExecutedBlock) -> Result<(), Error>{
+	fn on_close_block(&self, block: &mut ExecutedBlock<B>) -> Result<(), Error>{
 		let author = *block.header().author();
 
 		block_reward::apply_block_rewards(
@@ -626,7 +630,7 @@ impl Engine<EthereumMachine> for Tendermint {
 	}
 
 	fn signals_epoch_end(&self, header: &Header, aux: AuxiliaryData)
-		-> super::EpochChange<EthereumMachine>
+		-> super::EpochChange<EthereumMachine<B>>
 	{
 		let first = header.number() == 0;
 		self.validators.signals_epoch_end(first, header, aux)
@@ -662,7 +666,7 @@ impl Engine<EthereumMachine> for Tendermint {
 		self.is_epoch_end(chain_head, &[], chain, transition_store)
 	}
 
-	fn epoch_verifier<'a>(&self, _header: &Header, proof: &'a [u8]) -> ConstructedVerifier<'a, EthereumMachine> {
+	fn epoch_verifier<'a>(&self, _header: &Header, proof: &'a [u8]) -> ConstructedVerifier<'a, EthereumMachine<B>> {
 		let (signal_number, set_proof, finality_proof) = match destructure_proofs(proof) {
 			Ok(x) => x,
 			Err(e) => return ConstructedVerifier::Err(e),
@@ -676,6 +680,7 @@ impl Engine<EthereumMachine> for Tendermint {
 					recover: |signature: &Signature, message: &Message| {
 						Ok(ethkey::public_to_address(&ethkey::recover(&signature, &message)?))
 					},
+					_phantom: PhantomData
 				});
 
 				match finalize {
@@ -698,8 +703,8 @@ impl Engine<EthereumMachine> for Tendermint {
 		Ok(self.signer.read().sign(hash)?)
 	}
 
-	fn snapshot_components(&self) -> Option<Box<::snapshot::SnapshotComponents>> {
-		Some(Box::new(::snapshot::PoaSnapshot))
+	fn snapshot_components(&self) -> Option<Box<::snapshot::SnapshotComponents<StateBackend = B>>> {
+		Some(Box::new(::snapshot::PoaSnapshot::new()))
 	}
 
 	fn stop(&self) {
@@ -766,7 +771,7 @@ impl Engine<EthereumMachine> for Tendermint {
 		self.to_step(next_step);
 	}
 
-	fn register_client(&self, client: Weak<EngineClient>) {
+	fn register_client(&self, client: Weak<EngineClient<StateBackend = B>>) {
 		if let Some(c) = client.upgrade() {
 			self.height.store(c.chain_info().best_block_number as usize + 1, AtomicOrdering::SeqCst);
 		}
@@ -798,16 +803,17 @@ mod tests {
 	use spec::Spec;
 	use engines::{EthEngine, EngineError, Seal};
 	use engines::epoch::EpochVerifier;
+	use state_db::StateDB;
 	use super::*;
 
 	/// Accounts inserted with "0" and "1" are validators. First proposer is "0".
-	fn setup() -> (Spec, Arc<AccountProvider>) {
+	fn setup() -> (Spec<StateDB>, Arc<AccountProvider>) {
 		let tap = Arc::new(AccountProvider::transient_provider());
-		let spec = Spec::new_test_tendermint();
+		let spec = Spec::<StateDB>::new_test_tendermint();
 		(spec, tap)
 	}
 
-	fn propose_default(spec: &Spec, proposer: Address) -> (ClosedBlock, Vec<Bytes>) {
+	fn propose_default(spec: &Spec<StateDB>, proposer: Address) -> (ClosedBlock<StateDB>, Vec<Bytes>) {
 		let db = get_temp_state_db();
 		let db = spec.ensure_db_good(db, &Default::default()).unwrap();
 		let genesis_header = spec.genesis_header();
@@ -821,7 +827,7 @@ mod tests {
 		}
 	}
 
-	fn vote<F>(engine: &EthEngine, signer: F, height: usize, view: usize, step: Step, block_hash: Option<H256>) -> Bytes where F: FnOnce(H256) -> Result<H520, ::account_provider::SignError> {
+	fn vote<F>(engine: &EthEngine<StateDB>, signer: F, height: usize, view: usize, step: Step, block_hash: Option<H256>) -> Bytes where F: FnOnce(H256) -> Result<H520, ::account_provider::SignError> {
 		let mi = message_info_rlp(&VoteStep::new(height, view, step), block_hash);
 		let m = message_full_rlp(&signer(keccak(&mi)).unwrap().into(), &mi);
 		engine.handle_message(&m).unwrap();
@@ -845,7 +851,7 @@ mod tests {
 		addr
 	}
 
-	fn insert_and_register(tap: &Arc<AccountProvider>, engine: &EthEngine, acc: &str) -> Address {
+	fn insert_and_register(tap: &Arc<AccountProvider>, engine: &EthEngine<StateDB>, acc: &str) -> Address {
 		let addr = insert_and_unlock(tap, acc);
 		engine.set_signer(tap.clone(), addr.clone(), acc.into());
 		addr
@@ -853,13 +859,13 @@ mod tests {
 
 	#[test]
 	fn has_valid_metadata() {
-		let engine = Spec::new_test_tendermint().engine;
+		let engine = Spec::<StateDB>::new_test_tendermint().engine;
 		assert!(!engine.name().is_empty());
 	}
 
 	#[test]
 	fn can_return_schedule() {
-		let engine = Spec::new_test_tendermint().engine;
+		let engine = Spec::<StateDB>::new_test_tendermint().engine;
 		let schedule = engine.schedule(10000000);
 
 		assert!(schedule.stack_limit > 0);
@@ -867,7 +873,7 @@ mod tests {
 
 	#[test]
 	fn verification_fails_on_short_seal() {
-		let engine = Spec::new_test_tendermint().engine;
+		let engine = Spec::<StateDB>::new_test_tendermint().engine;
 		let header = Header::default();
 
 		let verify_result = engine.verify_block_basic(&header);
@@ -1031,7 +1037,7 @@ mod tests {
 		// Accounts for signing votes.
 		let v0 = insert_and_unlock(&tap, "0");
 		let v1 = insert_and_unlock(&tap, "1");
-		let client = generate_dummy_client_with_spec_and_accounts(Spec::new_test_tendermint, Some(tap.clone()));
+		let client = generate_dummy_client_with_spec_and_accounts(Spec::<StateDB>::new_test_tendermint, Some(tap.clone()));
 		let engine = client.engine();
 
 		client.miner().set_author(v1.clone(), Some("1".into())).unwrap();
@@ -1097,7 +1103,7 @@ mod tests {
 		seal[2] = ::rlp::encode_list(&vec![H520::from(signature1.clone())]);
 		header.set_seal(seal.clone());
 
-		let epoch_verifier = super::EpochVerifier {
+		let epoch_verifier = super::EpochVerifier::<_, StateDB> {
 			subchain_validators: SimpleList::new(vec![proposer.clone(), voter.clone()]),
 			recover: {
 				let signature1 = signature1.clone();
@@ -1114,6 +1120,7 @@ mod tests {
 					}
 				}
 			},
+			_phantom: ::std::marker::PhantomData,
 		};
 
 		// One good signature is not enough.

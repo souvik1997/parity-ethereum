@@ -30,6 +30,7 @@ use ethcore::client::{
 use ethcore::header::BlockNumber;
 use ethcore::snapshot::{RestorationStatus, SnapshotService as SS};
 use ethcore::snapshot::service::Service as SnapshotService;
+use ethcore::state_db::StateDB;
 use sync::{LightSyncProvider, LightSync, SyncProvider, ManageNetwork};
 use io::{TimerToken, IoContext, IoHandler};
 use light::Cache as LightDataCache;
@@ -218,7 +219,7 @@ pub struct Informant<T> {
 	last_tick: RwLock<Instant>,
 	with_color: bool,
 	target: T,
-	snapshot: Option<Arc<SnapshotService>>,
+	snapshot: Option<Arc<SnapshotService<StateDB>>>,
 	rpc_stats: Option<Arc<RpcStats>>,
 	last_import: Mutex<Instant>,
 	skipped: AtomicUsize,
@@ -231,7 +232,7 @@ impl<T: InformantData> Informant<T> {
 	/// Make a new instance potentially `with_color` output.
 	pub fn new(
 		target: T,
-		snapshot: Option<Arc<SnapshotService>>,
+		snapshot: Option<Arc<SnapshotService<StateDB>>>,
 		rpc_stats: Option<Arc<RpcStats>>,
 		with_color: bool,
 	) -> Self {

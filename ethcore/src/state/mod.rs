@@ -192,11 +192,11 @@ impl AccountEntry {
 /// Check the given proof of execution.
 /// `Err(ExecutionError::Internal)` indicates failure, everything else indicates
 /// a successful proof (as the transaction itself may be poorly chosen).
-pub fn check_proof(
+pub fn check_proof<G: Backend + Clone>(
 	proof: &[DBValue],
 	root: H256,
 	transaction: &SignedTransaction,
-	machine: &Machine,
+	machine: &Machine<G>,
 	env_info: &EnvInfo,
 ) -> ProvedExecution {
 	let backend = self::backend::ProofCheck::new(proof);
@@ -226,11 +226,11 @@ pub fn check_proof(
 /// Prove a `virtual` transaction on the given state.
 /// Returns `None` when the transacion could not be proved,
 /// and a proof otherwise.
-pub fn prove_transaction_virtual<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync>(
+pub fn prove_transaction_virtual<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync, G: Backend + Clone>(
 	db: H,
 	root: H256,
 	transaction: &SignedTransaction,
-	machine: &Machine,
+	machine: &Machine<G>,
 	env_info: &EnvInfo,
 	factories: Factories,
 ) -> Option<(Bytes, Vec<DBValue>)> {
@@ -801,7 +801,7 @@ impl<B: Backend> State<B> {
 
 	/// Execute a given transaction, producing a receipt and an optional trace.
 	/// This will change the state accordingly.
-	pub fn apply(&mut self, env_info: &EnvInfo, machine: &Machine, t: &SignedTransaction, tracing: bool) -> ApplyResult<FlatTrace, VMTrace> {
+	pub fn apply<G: Backend + Clone>(&mut self, env_info: &EnvInfo, machine: &Machine<G>, t: &SignedTransaction, tracing: bool) -> ApplyResult<FlatTrace, VMTrace> {
 		if tracing {
 			let options = TransactOptions::with_tracing();
 			self.apply_with_tracing(env_info, machine, t, options.tracer, options.vm_tracer)
@@ -813,10 +813,10 @@ impl<B: Backend> State<B> {
 
 	/// Execute a given transaction with given tracer and VM tracer producing a receipt and an optional trace.
 	/// This will change the state accordingly.
-	pub fn apply_with_tracing<V, T>(
+	pub fn apply_with_tracing<V, T, G: Backend + Clone>(
 		&mut self,
 		env_info: &EnvInfo,
-		machine: &Machine,
+		machine: &Machine<G>,
 		t: &SignedTransaction,
 		tracer: T,
 		vm_tracer: V,
@@ -860,7 +860,7 @@ impl<B: Backend> State<B> {
 	//
 	// `virt` signals that we are executing outside of a block set and restrictions like
 	// gas limits and gas costs should be lifted.
-	fn execute<T, V>(&mut self, env_info: &EnvInfo, machine: &Machine, t: &SignedTransaction, options: TransactOptions<T, V>, virt: bool)
+	fn execute<T, V, G: Backend + Clone>(&mut self, env_info: &EnvInfo, machine: &Machine<G>, t: &SignedTransaction, options: TransactOptions<T, V>, virt: bool)
 		-> Result<Executed<T::Output, V::Output>, ExecutionError> where T: trace::Tracer, V: trace::VMTracer,
 	{
 		let schedule = machine.schedule(env_info.number);
@@ -1272,6 +1272,7 @@ mod tests {
 	use machine::EthereumMachine;
 	use vm::EnvInfo;
 	use spec::*;
+	use state_db::StateDB;
 	use transaction::*;
 	use ethcore_logger::init_log;
 	use trace::{FlatTrace, TraceError, trace};
@@ -1281,7 +1282,7 @@ mod tests {
 		keccak("").into()
 	}
 
-	fn make_frontier_machine(max_depth: usize) -> EthereumMachine {
+	fn make_frontier_machine(max_depth: usize) -> EthereumMachine<StateDB> {
 		let mut machine = ::ethereum::new_frontier_test_machine();
 		machine.set_schedule_creation_rules(Box::new(move |s, _| s.max_depth = max_depth));
 		machine
@@ -1472,7 +1473,7 @@ mod tests {
 
 		let mut info = EnvInfo::default();
 		info.gas_limit = 1_000_000.into();
-		let machine = Spec::new_test_machine();
+		let machine = Spec::<StateDB>::new_test_machine();
 
 		let t = Transaction {
 			nonce: 0.into(),
@@ -1513,7 +1514,7 @@ mod tests {
 
 		let mut info = EnvInfo::default();
 		info.gas_limit = 1_000_000.into();
-		let machine = Spec::new_test_machine();
+		let machine = Spec::<StateDB>::new_test_machine();
 
 		let t = Transaction {
 			nonce: 0.into(),
@@ -1555,7 +1556,7 @@ mod tests {
 
 		let mut info = EnvInfo::default();
 		info.gas_limit = 1_000_000.into();
-		let machine = Spec::new_test_machine();
+		let machine = Spec::<StateDB>::new_test_machine();
 
 		let t = Transaction {
 			nonce: 0.into(),
@@ -1614,7 +1615,7 @@ mod tests {
 		let mut info = EnvInfo::default();
 		info.gas_limit = 1_000_000.into();
 		info.number = 0x789b0;
-		let machine = Spec::new_test_machine();
+		let machine = Spec::<StateDB>::new_test_machine();
 
 		let t = Transaction {
 			nonce: 0.into(),

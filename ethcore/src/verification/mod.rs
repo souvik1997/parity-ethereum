@@ -29,6 +29,7 @@ pub use self::noop_verifier::NoopVerifier;
 pub use self::queue::{BlockQueue, Config as QueueConfig, VerificationQueue, QueueInfo};
 
 use client::{BlockInfo, CallContract};
+use state::backend::Backend;
 
 /// Verifier type.
 #[derive(Debug, PartialEq, Clone)]
@@ -43,10 +44,10 @@ pub enum VerifierType {
 }
 
 /// Create a new verifier based on type.
-pub fn new<C: BlockInfo + CallContract>(v: VerifierType) -> Box<Verifier<C>> {
+pub fn new<C: BlockInfo + CallContract, B: Backend + Clone + 'static>(v: VerifierType) -> Box<Verifier<C, EngineStateBackend = B>> {
 	match v {
-		VerifierType::Canon | VerifierType::CanonNoSeal => Box::new(CanonVerifier),
-		VerifierType::Noop => Box::new(NoopVerifier),
+		VerifierType::Canon | VerifierType::CanonNoSeal => Box::new(CanonVerifier::new()),
+		VerifierType::Noop => Box::new(NoopVerifier::new()),
 	}
 }
 

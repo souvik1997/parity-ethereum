@@ -16,22 +16,30 @@
 
 //! Canonical verifier.
 
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 use client::{BlockInfo, CallContract};
 use engines::EthEngine;
 use error::Error;
 use header::Header;
+use state::backend::Backend;
 use super::Verifier;
 use super::verification;
 
 /// A canonial verifier -- this does full verification.
-pub struct CanonVerifier;
+pub struct CanonVerifier<B> { _phantom: SafePhantomData<B> }
 
-impl<C: BlockInfo + CallContract> Verifier<C> for CanonVerifier {
+impl<B> CanonVerifier<B> {
+	pub fn new() -> Self { Self { _phantom: PhantomData } }
+}
+
+impl<C: BlockInfo + CallContract, B: Backend + Clone + 'static> Verifier<C> for CanonVerifier<B> {
+	type EngineStateBackend = B;
 	fn verify_block_family(
 		&self,
 		header: &Header,
 		parent: &Header,
-		engine: &EthEngine,
+		engine: &EthEngine<B>,
 		do_full: Option<verification::FullFamilyParams<C>>,
 	) -> Result<(), Error> {
 		verification::verify_block_family(header, parent, engine, do_full)
@@ -41,7 +49,7 @@ impl<C: BlockInfo + CallContract> Verifier<C> for CanonVerifier {
 		verification::verify_block_final(expected, got)
 	}
 
-	fn verify_block_external(&self, header: &Header, engine: &EthEngine) -> Result<(), Error> {
+	fn verify_block_external(&self, header: &Header, engine: &EthEngine<B>) -> Result<(), Error> {
 		engine.verify_block_external(header)
 	}
 }

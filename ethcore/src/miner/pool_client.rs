@@ -38,6 +38,7 @@ use engines::EthEngine;
 use header::Header;
 use miner;
 use miner::service_transaction_checker::ServiceTransactionChecker;
+use state::backend::Backend;
 
 /// Cache for state nonces.
 #[derive(Debug, Clone)]
@@ -67,16 +68,16 @@ impl NonceCache {
 }
 
 /// Blockchain accesss for transaction pool.
-pub struct PoolClient<'a, C: 'a> {
+pub struct PoolClient<'a, C: 'a, B: Backend + Clone> {
 	chain: &'a C,
 	cached_nonces: CachedNonceClient<'a, C>,
-	engine: &'a EthEngine,
+	engine: &'a EthEngine<B>,
 	accounts: Option<&'a AccountProvider>,
 	best_block_header: Header,
 	service_transaction_checker: Option<ServiceTransactionChecker>,
 }
 
-impl<'a, C: 'a> Clone for PoolClient<'a, C> {
+impl<'a, C: 'a, B: Backend + Clone> Clone for PoolClient<'a, C, B> {
 	fn clone(&self) -> Self {
 		PoolClient {
 			chain: self.chain,
@@ -89,14 +90,14 @@ impl<'a, C: 'a> Clone for PoolClient<'a, C> {
 	}
 }
 
-impl<'a, C: 'a> PoolClient<'a, C> where
+impl<'a, C: 'a, B: Backend + Clone + 'static> PoolClient<'a, C, B> where
 C: BlockInfo + CallContract + ProvingCallContract,
 {
 	/// Creates new client given chain, nonce cache, accounts and service transaction verifier.
 	pub fn new(
 		chain: &'a C,
 		cache: &'a NonceCache,
-		engine: &'a EthEngine,
+		engine: &'a EthEngine<B>,
 		accounts: Option<&'a AccountProvider>,
 		refuse_service_transactions: bool,
 	) -> Self {
@@ -124,13 +125,13 @@ C: BlockInfo + CallContract + ProvingCallContract,
 }
 
 
-impl<'a, C: 'a> fmt::Debug for PoolClient<'a, C> {
+impl<'a, C: 'a, B: Backend + Clone> fmt::Debug for PoolClient<'a, C, B> {
 	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
 		write!(fmt, "PoolClient")
 	}
 }
 
-impl<'a, C: 'a> pool::client::Client for PoolClient<'a, C> where
+impl<'a, C: 'a, B: Backend + Clone + 'static> pool::client::Client for PoolClient<'a, C, B> where
 	C: miner::TransactionVerifierClient + Sync,
 {
 	fn transaction_already_included(&self, hash: &H256) -> bool {
@@ -177,7 +178,7 @@ impl<'a, C: 'a> pool::client::Client for PoolClient<'a, C> where
 	}
 }
 
-impl<'a, C: 'a> NonceClient for PoolClient<'a, C> where
+impl<'a, C: 'a, B: Backend + Clone> NonceClient for PoolClient<'a, C, B> where
 	C: Nonce + Sync,
 {
 	fn account_nonce(&self, address: &Address) -> U256 {

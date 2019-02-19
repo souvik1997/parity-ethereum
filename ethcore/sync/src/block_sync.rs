@@ -631,6 +631,7 @@ mod tests {
 	use tests::snapshot::TestSnapshotService;
 	use transaction::{Transaction,SignedTransaction};
 	use triehash_ethereum::ordered_trie_root;
+	use ethcore::state_db::StateDB;
 
 	fn dummy_header(number: u64, parent_hash: H256) -> BlockHeader {
 		let mut header = BlockHeader::new();
@@ -666,7 +667,7 @@ mod tests {
 	fn import_headers_in_chain_head_state() {
 		::env_logger::try_init().ok();
 
-		let spec = Spec::new_test();
+		let spec = Spec::<StateDB>::new_test();
 		let genesis_hash = spec.genesis_header().hash();
 
 		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &genesis_hash, 0);
@@ -915,7 +916,7 @@ mod tests {
 	fn reset_after_multiple_sets_of_useless_headers() {
 		::env_logger::try_init().ok();
 
-		let spec = Spec::new_test();
+		let spec = Spec::<StateDB>::new_test();
 		let genesis_hash = spec.genesis_header().hash();
 
 		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &genesis_hash, 0);
@@ -955,7 +956,7 @@ mod tests {
 	fn dont_reset_after_multiple_sets_of_useless_headers_for_chain_head() {
 		::env_logger::try_init().ok();
 
-		let spec = Spec::new_test();
+		let spec = Spec::<StateDB>::new_test();
 		let genesis_hash = spec.genesis_header().hash();
 
 		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &genesis_hash, 0);

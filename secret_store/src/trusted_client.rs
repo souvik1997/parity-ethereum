@@ -19,6 +19,7 @@ use bytes::Bytes;
 use ethereum_types::Address;
 use ethcore::client::{Client, BlockChainClient, ChainInfo, Nonce, BlockId, RegistryInfo};
 use ethcore::miner::{Miner, MinerService};
+use ethcore::state_db::StateDB;
 use sync::SyncProvider;
 use transaction::{Transaction, SignedTransaction, Action};
 use helpers::{get_confirmed_block_hash, REQUEST_CONFIRMATIONS_REQUIRED};
@@ -34,12 +35,12 @@ pub struct TrustedClient {
 	/// Sync provider.
 	sync: Weak<SyncProvider>,
 	/// Miner service.
-	miner: Weak<Miner>,
+	miner: Weak<Miner<StateDB>>,
 }
 
 impl TrustedClient {
 	/// Create new trusted client.
-	pub fn new(self_key_pair: Arc<NodeKeyPair>, client: Arc<Client>, sync: Arc<SyncProvider>, miner: Arc<Miner>) -> Self {
+	pub fn new(self_key_pair: Arc<NodeKeyPair>, client: Arc<Client>, sync: Arc<SyncProvider>, miner: Arc<Miner<StateDB>>) -> Self {
 		TrustedClient {
 			self_key_pair: self_key_pair,
 			client: Arc::downgrade(&client),

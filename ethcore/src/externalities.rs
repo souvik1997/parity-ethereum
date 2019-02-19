@@ -62,14 +62,14 @@ impl OriginInfo {
 }
 
 /// Implementation of evm Externalities.
-pub struct Externalities<'a, T: 'a, V: 'a, B: 'a> {
+pub struct Externalities<'a, T: 'a, V: 'a, B: 'a + StateBackend, G: 'a + StateBackend + Clone> {
 	state: &'a mut State<B>,
 	env_info: &'a EnvInfo,
 	depth: usize,
 	stack_depth: usize,
 	origin_info: &'a OriginInfo,
 	substate: &'a mut Substate,
-	machine: &'a Machine,
+	machine: &'a Machine<G>,
 	schedule: &'a Schedule,
 	output: OutputPolicy,
 	tracer: &'a mut T,
@@ -77,14 +77,14 @@ pub struct Externalities<'a, T: 'a, V: 'a, B: 'a> {
 	static_flag: bool,
 }
 
-impl<'a, T: 'a, V: 'a, B: 'a> Externalities<'a, T, V, B>
-	where T: Tracer, V: VMTracer, B: StateBackend
+impl<'a, T: 'a, V: 'a, B: 'a, G: 'a> Externalities<'a, T, V, B, G>
+	where T: Tracer, V: VMTracer, B: StateBackend, G: StateBackend + Clone
 {
 	/// Basic `Externalities` constructor.
 	pub fn new(
 		state: &'a mut State<B>,
 		env_info: &'a EnvInfo,
-		machine: &'a Machine,
+		machine: &'a Machine<G>,
 		schedule: &'a Schedule,
 		depth: usize,
 		stack_depth: usize,
@@ -112,8 +112,8 @@ impl<'a, T: 'a, V: 'a, B: 'a> Externalities<'a, T, V, B>
 	}
 }
 
-impl<'a, T: 'a, V: 'a, B: 'a> Ext for Externalities<'a, T, V, B>
-	where T: Tracer, V: VMTracer, B: StateBackend
+impl<'a, T: 'a, V: 'a, B: 'a, G: 'a> Ext for Externalities<'a, T, V, B, G>
+	where T: Tracer, V: VMTracer, B: StateBackend, G: StateBackend + Clone
 {
 	fn initial_storage_at(&self, key: &H256) -> vm::Result<H256> {
 		if self.state.is_base_storage_root_unchanged(&self.origin_info.address)? {
@@ -452,7 +452,7 @@ mod tests {
 
 	struct TestSetup {
 		state: State<::state_db::StateDB>,
-		machine: ::machine::EthereumMachine,
+		machine: ::machine::EthereumMachine<::state_db::StateDB>,
 		schedule: Schedule,
 		sub_state: Substate,
 		env_info: EnvInfo

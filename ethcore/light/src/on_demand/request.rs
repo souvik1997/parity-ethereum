@@ -26,6 +26,7 @@ use ethcore::engines::{EthEngine, StateDependentProof};
 use ethcore::machine::EthereumMachine;
 use ethcore::receipt::Receipt;
 use ethcore::state::{self, ProvedExecution};
+use ethcore::state_db::StateDB;
 use ethereum_types::{H256, U256, Address};
 use ethtrie::{TrieError, TrieDB};
 use hash::{KECCAK_NULL_RLP, KECCAK_EMPTY, KECCAK_EMPTY_LIST_RLP, keccak};
@@ -1039,7 +1040,7 @@ pub struct TransactionProof {
 	// TODO: it's not really possible to provide this if the header is unknown.
 	pub env_info: EnvInfo,
 	/// Consensus engine.
-	pub engine: Arc<EthEngine>,
+	pub engine: Arc<EthEngine<StateDB>>,
 }
 
 impl TransactionProof {
@@ -1082,9 +1083,9 @@ pub struct Signal {
 	/// Block hash and number to fetch proof for.
 	pub hash: H256,
 	/// Consensus engine, used to check the proof.
-	pub engine: Arc<EthEngine>,
+	pub engine: Arc<EthEngine<StateDB>>,
 	/// Special checker for the proof.
-	pub proof_check: Arc<StateDependentProof<EthereumMachine>>,
+	pub proof_check: Arc<StateDependentProof<EthereumMachine<StateDB>>>,
 }
 
 impl Signal {
@@ -1211,32 +1212,32 @@ mod tests {
 
 		// Incorrect responses
 		assert_eq!(header_with_ancestors(invalid_successor.hash().into(), 0)
-				   .check_response(&cache, &headers[0].hash().into(), &raw_headers[0..1]),
-				   Err(Error::WrongHash(invalid_successor.hash(), headers[0].hash())));
+					 .check_response(&cache, &headers[0].hash().into(), &raw_headers[0..1]),
+					 Err(Error::WrongHash(invalid_successor.hash(), headers[0].hash())));
 		assert_eq!(header_with_ancestors(headers[0].hash().into(), 0)
-				   .check_response(&cache, &headers[0].hash().into(), &[]),
-				   Err(Error::Empty));
+					 .check_response(&cache, &headers[0].hash().into(), &[]),
+					 Err(Error::Empty));
 		assert_eq!(header_with_ancestors(headers[0].hash().into(), 10)
-				   .check_response(&cache, &headers[0].hash().into(), &raw_headers[0..10]),
-				   Err(Error::TooFewResults(11, 10)));
+					 .check_response(&cache, &headers[0].hash().into(), &raw_headers[0..10]),
+					 Err(Error::TooFewResults(11, 10)));
 		assert_eq!(header_with_ancestors(headers[0].hash().into(), 9)
-				   .check_response(&cache, &headers[0].hash().into(), &raw_headers[0..11]),
-				   Err(Error::TooManyResults(10, 11)));
+					 .check_response(&cache, &headers[0].hash().into(), &raw_headers[0..11]),
+					 Err(Error::TooManyResults(10, 11)));
 
 		let response = &[raw_headers[0].clone(), raw_headers[2].clone()];
 		assert_eq!(header_with_ancestors(headers[0].hash().into(), 1)
-				   .check_response(&cache, &headers[0].hash().into(), response),
-				   Err(Error::WrongHeaderSequence));
+					 .check_response(&cache, &headers[0].hash().into(), response),
+					 Err(Error::WrongHeaderSequence));
 
 		let response = &[raw_invalid_successor.clone(), raw_headers[0].clone()];
 		assert_eq!(header_with_ancestors(invalid_successor.hash().into(), 1)
-				   .check_response(&cache, &invalid_successor.hash().into(), response),
-				   Err(Error::WrongHeaderSequence));
+					 .check_response(&cache, &invalid_successor.hash().into(), response),
+					 Err(Error::WrongHeaderSequence));
 
 		let response = &[raw_invalid_successor.clone(), raw_headers[1].clone()];
 		assert_eq!(header_with_ancestors(invalid_successor.hash().into(), 1)
-				   .check_response(&cache, &invalid_successor.hash().into(), response),
-				   Err(Error::WrongHeaderSequence));
+					 .check_response(&cache, &invalid_successor.hash().into(), response),
+					 Err(Error::WrongHeaderSequence));
 	}
 
 	#[test]

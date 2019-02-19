@@ -144,6 +144,8 @@ extern crate env_logger;
 
 pub extern crate ethstore;
 
+extern crate rich_phantoms;
+
 #[macro_use]
 pub mod views;
 

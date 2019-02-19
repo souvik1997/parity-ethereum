@@ -71,6 +71,7 @@ use std::sync::Arc;
 use kvdb::KeyValueDB;
 use ethcore::client::Client;
 use ethcore::miner::Miner;
+use ethcore::state_db::StateDB;
 use sync::SyncProvider;
 
 pub use types::{ServerKeyId, EncryptedDocumentKey, RequestSignature, Public,
@@ -79,7 +80,7 @@ pub use traits::{NodeKeyPair, KeyServer};
 pub use self::node_key_pair::{PlainNodeKeyPair, KeyStoreNodeKeyPair};
 
 /// Start new key server instance
-pub fn start(client: Arc<Client>, sync: Arc<SyncProvider>, miner: Arc<Miner>, self_key_pair: Arc<NodeKeyPair>, mut config: ServiceConfiguration, db: Arc<KeyValueDB>) -> Result<Box<KeyServer>, Error> {
+pub fn start(client: Arc<Client>, sync: Arc<SyncProvider>, miner: Arc<Miner<StateDB>>, self_key_pair: Arc<NodeKeyPair>, mut config: ServiceConfiguration, db: Arc<KeyValueDB>) -> Result<Box<KeyServer>, Error> {
 	let trusted_client = trusted_client::TrustedClient::new(self_key_pair.clone(), client.clone(), sync, miner);
 	let acl_storage: Arc<acl_storage::AclStorage> = match config.acl_check_contract_address.take() {
 		Some(acl_check_contract_address) => acl_storage::OnChainAclStorage::new(trusted_client.clone(), acl_check_contract_address)?,

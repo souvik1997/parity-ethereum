@@ -29,6 +29,7 @@ use client::{Client, ChainInfo};
 use engines::EthEngine;
 use snapshot::{StateRebuilder};
 use snapshot::io::{SnapshotReader, PackedWriter, PackedReader};
+use state_db::StateDB;
 
 use tempdir::TempDir;
 use rand::Rng;
@@ -161,7 +162,7 @@ pub fn snap(client: &Client) -> (Box<SnapshotReader>, TempDir) {
 /// write into the given database.
 pub fn restore(
 	db: Arc<BlockChainDB>,
-	engine: &EthEngine,
+	engine: &EthEngine<StateDB>,
 	reader: &SnapshotReader,
 	genesis: &[u8],
 ) -> Result<(), ::error::Error> {

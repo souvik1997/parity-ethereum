@@ -109,17 +109,17 @@ pub fn generate_dummy_client_with_data(block_number: u32, txs_per_block: usize, 
 }
 
 /// Generates dummy client (not test client) with corresponding amount of blocks, txs per block and spec
-pub fn generate_dummy_client_with_spec_and_data<F>(test_spec: F, block_number: u32, txs_per_block: usize, tx_gas_prices: &[U256]) -> Arc<Client> where F: Fn()->Spec {
+pub fn generate_dummy_client_with_spec_and_data<F>(test_spec: F, block_number: u32, txs_per_block: usize, tx_gas_prices: &[U256]) -> Arc<Client> where F: Fn()->Spec<StateDB> {
 	generate_dummy_client_with_spec_accounts_and_data(test_spec, None, block_number, txs_per_block, tx_gas_prices)
 }
 
 /// Generates dummy client (not test client) with corresponding spec and accounts
-pub fn generate_dummy_client_with_spec_and_accounts<F>(test_spec: F, accounts: Option<Arc<AccountProvider>>) -> Arc<Client> where F: Fn()->Spec {
+pub fn generate_dummy_client_with_spec_and_accounts<F>(test_spec: F, accounts: Option<Arc<AccountProvider>>) -> Arc<Client> where F: Fn()->Spec<StateDB> {
 	generate_dummy_client_with_spec_accounts_and_data(test_spec, accounts, 0, 0, &[])
 }
 
 /// Generates dummy client (not test client) with corresponding blocks, accounts and spec
-pub fn generate_dummy_client_with_spec_accounts_and_data<F>(test_spec: F, accounts: Option<Arc<AccountProvider>>, block_number: u32, txs_per_block: usize, tx_gas_prices: &[U256]) -> Arc<Client> where F: Fn()->Spec {
+pub fn generate_dummy_client_with_spec_accounts_and_data<F>(test_spec: F, accounts: Option<Arc<AccountProvider>>, block_number: u32, txs_per_block: usize, tx_gas_prices: &[U256]) -> Arc<Client> where F: Fn()->Spec<StateDB> {
 	let test_spec = test_spec();
 	let client_db = new_db();
 
@@ -194,7 +194,7 @@ pub fn generate_dummy_client_with_spec_accounts_and_data<F>(test_spec: F, accoun
 
 /// Adds blocks to the client
 pub fn push_blocks_to_client(client: &Arc<Client>, timestamp_salt: u64, starting_number: usize, block_number: usize) {
-	let test_spec = Spec::new_test();
+	let test_spec: Spec<StateDB> = Spec::new_test();
 	let state_root = test_spec.genesis_header().state_root().clone();
 	let genesis_gas = test_spec.genesis_header().gas_limit().clone();
 
@@ -224,7 +224,7 @@ pub fn push_blocks_to_client(client: &Arc<Client>, timestamp_salt: u64, starting
 
 /// Adds one block with transactions
 pub fn push_block_with_transactions(client: &Arc<Client>, transactions: &[SignedTransaction]) {
-	let test_spec = Spec::new_test();
+	let test_spec: Spec<StateDB> = Spec::new_test();
 	let test_engine = &*test_spec.engine;
 	let block_number = client.chain_info().best_block_number as u64 + 1;
 
@@ -246,7 +246,7 @@ pub fn push_block_with_transactions(client: &Arc<Client>, transactions: &[Signed
 
 /// Creates dummy client (not test client) with corresponding blocks
 pub fn get_test_client_with_blocks(blocks: Vec<Bytes>) -> Arc<Client> {
-	let test_spec = Spec::new_test();
+	let test_spec: Spec<StateDB> = Spec::new_test();
 	let client_db = new_db();
 
 	let client = Client::new(
@@ -438,13 +438,13 @@ pub fn get_temp_state_db() -> StateDB {
 
 /// Returns sequence of hashes of the dummy blocks
 pub fn get_good_dummy_block_seq(count: usize) -> Vec<Bytes> {
-	let test_spec = Spec::new_test();
+	let test_spec: Spec<StateDB> = Spec::new_test();
 	get_good_dummy_block_fork_seq(1, count, &test_spec.genesis_header().hash())
 }
 
 /// Returns sequence of hashes of the dummy blocks beginning from corresponding parent
 pub fn get_good_dummy_block_fork_seq(start_number: usize, count: usize, parent_hash: &H256) -> Vec<Bytes> {
-	let test_spec = Spec::new_test();
+	let test_spec: Spec<StateDB> = Spec::new_test();
 	let genesis_gas = test_spec.genesis_header().gas_limit().clone();
 	let mut rolling_timestamp = start_number as u64 * 10;
 	let mut parent = *parent_hash;
@@ -469,7 +469,7 @@ pub fn get_good_dummy_block_fork_seq(start_number: usize, count: usize, parent_h
 /// Returns hash and header of the correct dummy block
 pub fn get_good_dummy_block_hash() -> (H256, Bytes) {
 	let mut block_header = Header::new();
-	let test_spec = Spec::new_test();
+	let test_spec: Spec<StateDB> = Spec::new_test();
 	let genesis_gas = test_spec.genesis_header().gas_limit().clone();
 	block_header.set_gas_limit(genesis_gas);
 	block_header.set_difficulty(U256::from(0x20000));
@@ -490,7 +490,7 @@ pub fn get_good_dummy_block() -> Bytes {
 /// Returns hash of the dummy block with incorrect state root
 pub fn get_bad_state_dummy_block() -> Bytes {
 	let mut block_header = Header::new();
-	let test_spec = Spec::new_test();
+	let test_spec: Spec<StateDB> = Spec::new_test();
 	let genesis_gas = test_spec.genesis_header().gas_limit().clone();
 
 	block_header.set_gas_limit(genesis_gas);

@@ -22,6 +22,7 @@ use blockchain::BlockChain;
 use engines::{EthEngine, EpochVerifier};
 use header::Header;
 use machine::EthereumMachine;
+use state::backend::Backend;
 
 use rand::Rng;
 use parking_lot::RwLock;
@@ -31,14 +32,14 @@ const HEAVY_VERIFY_RATE: f32 = 0.02;
 
 /// Ancient block verifier: import an ancient sequence of blocks in order from a starting
 /// epoch.
-pub struct AncientVerifier {
-	cur_verifier: RwLock<Option<Box<EpochVerifier<EthereumMachine>>>>,
-	engine: Arc<EthEngine>,
+pub struct AncientVerifier<B: Backend + Clone> {
+	cur_verifier: RwLock<Option<Box<EpochVerifier<EthereumMachine<B>>>>>,
+	engine: Arc<EthEngine<B>>,
 }
 
-impl AncientVerifier {
+impl<B: Backend + Clone + 'static> AncientVerifier<B> {
 	/// Create a new ancient block verifier with the given engine.
-	pub fn new(engine: Arc<EthEngine>) -> Self {
+	pub fn new(engine: Arc<EthEngine<B>>) -> Self {
 		AncientVerifier {
 			cur_verifier: RwLock::new(None),
 			engine,
@@ -87,7 +88,7 @@ impl AncientVerifier {
 	}
 
 	fn initial_verifier(&self, header: &Header, chain: &BlockChain)
-		-> Result<Box<EpochVerifier<EthereumMachine>>, ::error::Error>
+		-> Result<Box<EpochVerifier<EthereumMachine<B>>>, ::error::Error>
 	{
 		trace!(target: "client", "Initializing ancient block restoration.");
 		let current_epoch_data = chain.epoch_transitions()

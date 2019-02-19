@@ -29,6 +29,7 @@ use ethcore::verification::queue::{self, HeaderQueue};
 use ethcore::blockchain_info::BlockChainInfo;
 use ethcore::spec::{Spec, SpecHardcodedSync};
 use ethcore::encoded;
+use ethcore::state_db::StateDB;
 use io::IoChannel;
 use parking_lot::{Mutex, RwLock};
 use ethereum_types::{H256, U256};
@@ -110,7 +111,7 @@ pub trait LightChainClient: Send + Sync {
 	fn env_info(&self, id: BlockId) -> Option<EnvInfo>;
 
 	/// Get a handle to the consensus engine.
-	fn engine(&self) -> &Arc<EthEngine>;
+	fn engine(&self) -> &Arc<EthEngine<StateDB>>;
 
 	/// Query whether a block is known.
 	fn is_known(&self, hash: &H256) -> bool;
@@ -154,8 +155,8 @@ impl<T: LightChainClient> AsLightClient for T {
 
 /// Light client implementation.
 pub struct Client<T> {
-	queue: HeaderQueue,
-	engine: Arc<EthEngine>,
+	queue: HeaderQueue<StateDB>,
+	engine: Arc<EthEngine<StateDB>>,
 	chain: HeaderChain,
 	report: RwLock<ClientReport>,
 	import_lock: Mutex<()>,
@@ -171,7 +172,7 @@ impl<T: ChainDataFetcher> Client<T> {
 		config: Config,
 		db: Arc<KeyValueDB>,
 		chain_col: Option<u32>,
-		spec: &Spec,
+		spec: &Spec<StateDB>,
 		fetcher: T,
 		io_channel: IoChannel<ClientIoMessage>,
 		cache: Arc<Mutex<Cache>>
@@ -360,7 +361,7 @@ impl<T: ChainDataFetcher> Client<T> {
 	}
 
 	/// Get a handle to the verification engine.
-	pub fn engine(&self) -> &Arc<EthEngine> {
+	pub fn engine(&self) -> &Arc<EthEngine<StateDB>> {
 		&self.engine
 	}
 
@@ -452,7 +453,7 @@ impl<T: ChainDataFetcher> Client<T> {
 		true
 	}
 
-	fn check_epoch_signal(&self, verified_header: &Header) -> Result<Option<Proof<EthereumMachine>>, T::Error> {
+	fn check_epoch_signal(&self, verified_header: &Header) -> Result<Option<Proof<EthereumMachine<StateDB>>>, T::Error> {
 		use ethcore::machine::{AuxiliaryRequest, AuxiliaryData};
 
 		let mut block: Option<Vec<u8>> = None;
@@ -498,7 +499,7 @@ impl<T: ChainDataFetcher> Client<T> {
 	}
 
 	// attempts to fetch the epoch proof from the network until successful.
-	fn write_pending_proof(&self, header: &Header, proof: Proof<EthereumMachine>) -> Result<(), T::Error> {
+	fn write_pending_proof(&self, header: &Header, proof: Proof<EthereumMachine<StateDB>>) -> Result<(), T::Error> {
 		let proof = match proof {
 			Proof::Known(known) => known,
 			Proof::WithState(state_dependent) => {
@@ -558,7 +559,7 @@ impl<T: ChainDataFetcher> LightChainClient for Client<T> {
 		Client::env_info(self, id)
 	}
 
-	fn engine(&self) -> &Arc<EthEngine> {
+	fn engine(&self) -> &Arc<EthEngine<StateDB>> {
 		Client::engine(self)
 	}
 
@@ -594,6 +595,7 @@ impl<T: ChainDataFetcher> ::ethcore::client::ChainInfo for Client<T> {
 }
 
 impl<T: ChainDataFetcher> ::ethcore::client::EngineClient for Client<T> {
+	type StateBackend = StateDB;
 	fn update_sealing(&self) { }
 	fn submit_seal(&self, _block_hash: H256, _seal: Vec<Vec<u8>>) { }
 	fn broadcast_consensus_message(&self, _message: Vec<u8>) { }
@@ -606,7 +608,7 @@ impl<T: ChainDataFetcher> ::ethcore::client::EngineClient for Client<T> {
 		})
 	}
 
-	fn as_full_client(&self) -> Option<&::ethcore::client::BlockChainClient> {
+	fn as_full_client(&self) -> Option<&::ethcore::client::BlockChainClient<StateBackend = StateDB>> {
 		None
 	}
 

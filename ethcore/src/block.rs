@@ -44,8 +44,7 @@ use hash::keccak;
 use header::{Header, ExtendedHeader};
 use receipt::{Receipt, TransactionOutcome};
 use rlp::{Rlp, RlpStream, Encodable, Decodable, DecoderError, encode_list};
-use state_db::StateDB;
-use state::{State, backend::Proving, backend::Proof};
+use state::{State, backend::Proving, backend::Proof, backend::Backend};
 use trace::Tracing;
 use transaction::{UnverifiedTransaction, SignedTransaction, Error as TransactionError};
 use triehash::ordered_trie_root;
@@ -98,7 +97,7 @@ impl Decodable for Block {
 
 /// An internal type for a block's common elements.
 #[derive(Clone)]
-pub struct ExecutedBlock {
+pub struct ExecutedBlock<B: Backend + Clone> {
 	/// Executed block header.
 	pub header: Header,
 	/// Executed transactions.
@@ -110,16 +109,16 @@ pub struct ExecutedBlock {
 	/// Hashes of already executed transactions.
 	pub transactions_set: HashSet<H256>,
 	/// Underlaying state.
-	pub state: State<Proving<StateDB>>,
+	pub state: State<Proving<B>>,
 	/// Transaction traces.
 	pub traces: Tracing,
 	/// Hashes of last 256 blocks.
 	pub last_hashes: Arc<LastHashes>,
 }
 
-impl ExecutedBlock {
+impl<'a, B: Backend + Clone + 'a> ExecutedBlock<B> {
 	/// Create a new block from the given `state`.
-	fn new(state: State<Proving<StateDB>>, last_hashes: Arc<LastHashes>, tracing: bool) -> ExecutedBlock {
+	fn new(state: State<Proving<B>>, last_hashes: Arc<LastHashes>, tracing: bool) -> ExecutedBlock<B> {
 		ExecutedBlock {
 			header: Default::default(),
 			transactions: Default::default(),
@@ -151,7 +150,7 @@ impl ExecutedBlock {
 	}
 
 	/// Get mutable access to a state.
-	pub fn state_mut(&mut self) -> &mut State<Proving<StateDB>> {
+	pub fn state_mut(&mut self) -> &mut State<Proving<B>> {
 		&mut self.state
 	}
 
@@ -163,8 +162,11 @@ impl ExecutedBlock {
 
 /// Trait for a object that is a `ExecutedBlock`.
 pub trait IsBlock {
+
+	type BlockStateBackend: Backend + Clone;
+
 	/// Get the `ExecutedBlock` associated with this object.
-	fn block(&self) -> &ExecutedBlock;
+	fn block(&self) -> &ExecutedBlock<Self::BlockStateBackend>;
 
 	/// Get the base `Block` object associated with this.
 	fn to_base(&self) -> Block {
@@ -180,7 +182,7 @@ pub trait IsBlock {
 	fn header(&self) -> &Header { &self.block().header }
 
 	/// Get the final state associated with this object's block.
-	fn state(&self) -> &State<Proving<StateDB>> { &self.block().state }
+	fn state(&self) -> &State<Proving<Self::BlockStateBackend>> { &self.block().state }
 
 	/// Get all information on transactions in this block.
 	fn transactions(&self) -> &[SignedTransaction] { &self.block().transactions }
@@ -195,16 +197,17 @@ pub trait IsBlock {
 }
 
 /// Trait for an object that owns an `ExecutedBlock`
-pub trait Drain {
+pub trait Drain<B: Backend + Clone> {
 	/// Returns `ExecutedBlock`
-	fn drain(self) -> ExecutedBlock;
+	fn drain(self) -> ExecutedBlock<B>;
 }
 
-impl IsBlock for ExecutedBlock {
-	fn block(&self) -> &ExecutedBlock { self }
+impl<'a, B: Backend + Clone + 'a> IsBlock for ExecutedBlock<B> {
+	type BlockStateBackend = B;
+	fn block(&self) -> &ExecutedBlock<B> { self }
 }
 
-impl ::parity_machine::LiveBlock for ExecutedBlock {
+impl<B: Backend + Clone + 'static> ::parity_machine::LiveBlock for ExecutedBlock<B> {
 	type Header = Header;
 
 	fn header(&self) -> &Header {
@@ -216,7 +219,7 @@ impl ::parity_machine::LiveBlock for ExecutedBlock {
 	}
 }
 
-impl ::parity_machine::Transactions for ExecutedBlock {
+impl<B: Backend + Clone + 'static> ::parity_machine::Transactions for ExecutedBlock<B> {
 	type Transaction = SignedTransaction;
 
 	fn transactions(&self) -> &[SignedTransaction] {
@@ -228,9 +231,9 @@ impl ::parity_machine::Transactions for ExecutedBlock {
 ///
 /// It's a bit like a Vec<Transaction>, except that whenever a transaction is pushed, we execute it and
 /// maintain the system `state()`. We also archive execution receipts in preparation for later block creation.
-pub struct OpenBlock<'x> {
-	block: ExecutedBlock,
-	engine: &'x EthEngine,
+pub struct OpenBlock<'x, B: Backend + Clone> {
+	block: ExecutedBlock<B>,
+	engine: &'x EthEngine<B>,
 }
 
 /// Just like `OpenBlock`, except that we've applied `Engine::on_close_block`, finished up the non-seal header fields,
@@ -238,33 +241,33 @@ pub struct OpenBlock<'x> {
 ///
 /// There is no function available to push a transaction.
 #[derive(Clone)]
-pub struct ClosedBlock {
-	block: ExecutedBlock,
-	unclosed_state: State<Proving<StateDB>>,
+pub struct ClosedBlock<B: Backend + Clone> {
+	block: ExecutedBlock<B>,
+	unclosed_state: State<Proving<B>>,
 }
 
 /// Just like `ClosedBlock` except that we can't reopen it and it's faster.
 ///
 /// We actually store the post-`Engine::on_close_block` state, unlike in `ClosedBlock` where it's the pre.
 #[derive(Clone)]
-pub struct LockedBlock {
-	block: ExecutedBlock,
+pub struct LockedBlock<B: Backend + Clone> {
+	block: ExecutedBlock<B>,
 }
 
 /// A block that has a valid seal.
 ///
 /// The block's header has valid seal arguments. The block cannot be reversed into a `ClosedBlock` or `OpenBlock`.
-pub struct SealedBlock {
-	block: ExecutedBlock,
+pub struct SealedBlock<B: Backend + Clone> {
+	block: ExecutedBlock<B>,
 }
 
-impl<'x> OpenBlock<'x> {
+impl<'x, B: Backend + Clone + 'static> OpenBlock<'x, B> {
 	/// Create a new `OpenBlock` ready for transaction pushing.
 	pub fn new<'a>(
-		engine: &'x EthEngine,
+		engine: &'x EthEngine<B>,
 		factories: Factories,
 		tracing: bool,
-		db: StateDB,
+		db: B,
 		parent: &Header,
 		last_hashes: Arc<LastHashes>,
 		author: Address,
@@ -400,7 +403,7 @@ impl<'x> OpenBlock<'x> {
 	}
 
 	/// Turn this into a `ClosedBlock`.
-	pub fn close(self) -> Result<ClosedBlock, Error> {
+	pub fn close(self) -> Result<ClosedBlock<B>, Error> {
 		let unclosed_state = self.block.state.clone();
 		let locked = self.close_and_lock()?;
 
@@ -411,7 +414,7 @@ impl<'x> OpenBlock<'x> {
 	}
 
 	/// Turn this into a `LockedBlock`.
-	pub fn close_and_lock(self) -> Result<LockedBlock, Error> {
+	pub fn close_and_lock(self) -> Result<LockedBlock<B>, Error> {
 		let mut s = self;
 
 		s.engine.on_close_block(&mut s.block)?;
@@ -435,34 +438,37 @@ impl<'x> OpenBlock<'x> {
 
 	#[cfg(test)]
 	/// Return mutable block reference. To be used in tests only.
-	pub fn block_mut(&mut self) -> &mut ExecutedBlock { &mut self.block }
+	pub fn block_mut(&mut self) -> &mut ExecutedBlock<B> { &mut self.block }
 }
 
-impl<'x> IsBlock for OpenBlock<'x> {
-	fn block(&self) -> &ExecutedBlock { &self.block }
+impl<'x, B: Backend + Clone + 'x> IsBlock for OpenBlock<'x, B> {
+	type BlockStateBackend = B;
+	fn block(&self) -> &ExecutedBlock<B> { &self.block }
 }
 
-impl IsBlock for ClosedBlock {
-	fn block(&self) -> &ExecutedBlock { &self.block }
+impl<'a, B: Backend + Clone + 'a> IsBlock for ClosedBlock<B> {
+	type BlockStateBackend = B;
+	fn block(&self) -> &ExecutedBlock<B> { &self.block }
 }
 
-impl IsBlock for LockedBlock {
-	fn block(&self) -> &ExecutedBlock { &self.block }
+impl<'a, B: Backend + Clone + 'a> IsBlock for LockedBlock<B> {
+	type BlockStateBackend = B;
+	fn block(&self) -> &ExecutedBlock<B> { &self.block }
 }
 
-impl ClosedBlock {
+impl<'a, B: Backend + Clone + 'a> ClosedBlock<B> {
 	/// Get the hash of the header without seal arguments.
 	pub fn hash(&self) -> H256 { self.header().bare_hash() }
 
 	/// Turn this into a `LockedBlock`, unable to be reopened again.
-	pub fn lock(self) -> LockedBlock {
+	pub fn lock(self) -> LockedBlock<B> {
 		LockedBlock {
 			block: self.block,
 		}
 	}
 
 	/// Given an engine reference, reopen the `ClosedBlock` into an `OpenBlock`.
-	pub fn reopen(self, engine: &EthEngine) -> OpenBlock {
+	pub fn reopen(self, engine: &EthEngine<B>) -> OpenBlock<B> {
 		// revert rewards (i.e. set state back at last transaction's state).
 		let mut block = self.block;
 		block.state = self.unclosed_state;
@@ -473,7 +479,7 @@ impl ClosedBlock {
 	}
 }
 
-impl LockedBlock {
+impl<'a, B: Backend + Clone + 'a> LockedBlock<B> {
 	/// Removes outcomes from receipts and updates the receipt root.
 	///
 	/// This is done after the block is enacted for historical reasons.
@@ -493,11 +499,13 @@ impl LockedBlock {
 
 	/// Get the hash of the header without seal arguments.
 	pub fn hash(&self) -> H256 { self.header().bare_hash() }
+}
 
+impl<B: Backend + Clone + 'static> LockedBlock<B> {
 	/// Provide a valid seal in order to turn this into a `SealedBlock`.
 	///
 	/// NOTE: This does not check the validity of `seal` with the engine.
-	pub fn seal(self, engine: &EthEngine, seal: Vec<Bytes>) -> Result<SealedBlock, BlockError> {
+	pub fn seal(self, engine: &EthEngine<B>, seal: Vec<Bytes>) -> Result<SealedBlock<B>, BlockError> {
 		let expected_seal_fields = engine.seal_fields(self.header());
 		let mut s = self;
 		if seal.len() != expected_seal_fields {
@@ -511,14 +519,15 @@ impl LockedBlock {
 		})
 	}
 
+
 	/// Provide a valid seal in order to turn this into a `SealedBlock`.
 	/// This does check the validity of `seal` with the engine.
 	/// Returns the `ClosedBlock` back again if the seal is no good.
 	pub fn try_seal(
 		self,
-		engine: &EthEngine,
+		engine: &EthEngine<B>,
 		seal: Vec<Bytes>,
-	) -> Result<SealedBlock, Error> {
+	) -> Result<SealedBlock<B>, Error> {
 		let mut s = self;
 		s.block.header.set_seal(seal);
 		s.block.header.compute_hash();
@@ -531,13 +540,13 @@ impl LockedBlock {
 	}
 }
 
-impl Drain for LockedBlock {
-	fn drain(self) -> ExecutedBlock {
+impl<B: Backend + Clone> Drain<B> for LockedBlock<B> {
+	fn drain(self) -> ExecutedBlock<B> {
 		self.block
 	}
 }
 
-impl SealedBlock {
+impl<'a, B: Backend + Clone + 'a> SealedBlock<B> {
 	/// Get the RLP-encoding of the block.
 	pub fn rlp_bytes(&self) -> Bytes {
 		let mut block_rlp = RlpStream::new_list(4);
@@ -549,33 +558,34 @@ impl SealedBlock {
 	}
 }
 
-impl Drain for SealedBlock {
-	fn drain(self) -> ExecutedBlock {
+impl<B: Backend + Clone> Drain<B> for SealedBlock<B> {
+	fn drain(self) -> ExecutedBlock<B> {
 		self.block
 	}
 }
 
-impl IsBlock for SealedBlock {
-	fn block(&self) -> &ExecutedBlock { &self.block }
+impl<'a, B: Backend + Clone + 'a> IsBlock for SealedBlock<B> {
+	type BlockStateBackend = B;
+	fn block(&self) -> &ExecutedBlock<B> { &self.block }
 }
 
 /// Enact the block given by block header, transactions and uncles
-fn enact(
+fn enact<B: Backend + Clone + 'static>(
 	header: Header,
 	transactions: Vec<SignedTransaction>,
 	uncles: Vec<Header>,
-	engine: &EthEngine,
+	engine: &EthEngine<B>,
 	tracing: bool,
-	db: StateDB,
+	db: B,
 	parent: &Header,
 	last_hashes: Arc<LastHashes>,
 	factories: Factories,
 	is_epoch_begin: bool,
 	ancestry: &mut Iterator<Item=ExtendedHeader>,
-) -> Result<LockedBlock, Error> {
+) -> Result<LockedBlock<B>, Error> {
 	{
 		if ::log::max_level() >= ::log::Level::Trace {
-			let s = State::from_existing(db.boxed_clone(), parent.state_root().clone(), engine.account_start_nonce(parent.number() + 1), factories.clone())?;
+			let s = State::from_existing(db.clone(), parent.state_root().clone(), engine.account_start_nonce(parent.number() + 1), factories.clone())?;
 			trace!(target: "enact", "num={}, root={}, author={}, author_balance={}\n",
 				header.number(), s.root(), header.author(), s.balance(&header.author())?);
 		}
@@ -606,17 +616,17 @@ fn enact(
 }
 
 /// Enact the block given by `block_bytes` using `engine` on the database `db` with given `parent` block header
-pub fn enact_verified(
+pub fn enact_verified<B: Backend + Clone + 'static>(
 	block: PreverifiedBlock,
-	engine: &EthEngine,
+	engine: &EthEngine<B>,
 	tracing: bool,
-	db: StateDB,
+	db: B,
 	parent: &Header,
 	last_hashes: Arc<LastHashes>,
 	factories: Factories,
 	is_epoch_begin: bool,
 	ancestry: &mut Iterator<Item=ExtendedHeader>,
-) -> Result<LockedBlock, Error> {
+) -> Result<LockedBlock<B>, Error> {
 
 	enact(
 		block.header,
@@ -652,13 +662,13 @@ mod tests {
 	/// Enact the block given by `block_bytes` using `engine` on the database `db` with given `parent` block header
 	fn enact_bytes(
 		block_bytes: Vec<u8>,
-		engine: &EthEngine,
+		engine: &EthEngine<StateDB>,
 		tracing: bool,
 		db: StateDB,
 		parent: &Header,
 		last_hashes: Arc<LastHashes>,
 		factories: Factories,
-	) -> Result<LockedBlock, Error> {
+	) -> Result<LockedBlock<StateDB>, Error> {
 		let block = Unverified::from_rlp(block_bytes)?;
 		let header = block.header;
 		let transactions: Result<Vec<_>, Error> = block
@@ -704,13 +714,13 @@ mod tests {
 	/// Enact the block given by `block_bytes` using `engine` on the database `db` with given `parent` block header. Seal the block aferwards
 	fn enact_and_seal(
 		block_bytes: Vec<u8>,
-		engine: &EthEngine,
+		engine: &EthEngine<StateDB>,
 		tracing: bool,
 		db: StateDB,
 		parent: &Header,
 		last_hashes: Arc<LastHashes>,
 		factories: Factories,
-	) -> Result<SealedBlock, Error> {
+	) -> Result<SealedBlock<StateDB>, Error> {
 		let header = Unverified::from_rlp(block_bytes.clone())?.header;
 		Ok(enact_bytes(block_bytes, engine, tracing, db, parent, last_hashes, factories)?
 			 .seal(engine, header.seal().to_vec())?)
@@ -719,7 +729,7 @@ mod tests {
 	#[test]
 	fn open_block() {
 		use spec::*;
-		let spec = Spec::new_test();
+		let spec = Spec::<StateDB>::new_test();
 		let genesis_header = spec.genesis_header();
 		let db = spec.ensure_db_good(get_temp_state_db(), &Default::default()).unwrap();
 		let last_hashes = Arc::new(vec![genesis_header.hash()]);
@@ -731,7 +741,7 @@ mod tests {
 	#[test]
 	fn enact_block() {
 		use spec::*;
-		let spec = Spec::new_test();
+		let spec = Spec::<StateDB>::new_test();
 		let engine = &*spec.engine;
 		let genesis_header = spec.genesis_header();
 
@@ -755,7 +765,7 @@ mod tests {
 	#[test]
 	fn enact_block_with_uncle() {
 		use spec::*;
-		let spec = Spec::new_test();
+		let spec = Spec::<StateDB>::new_test();
 		let engine = &*spec.engine;
 		let genesis_header = spec.genesis_header();
 

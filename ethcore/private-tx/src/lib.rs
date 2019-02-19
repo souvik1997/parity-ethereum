@@ -85,6 +85,7 @@ use ethcore::client::{
 };
 use ethcore::account_provider::AccountProvider;
 use ethcore::miner::{self, Miner, MinerService, pool_client::NonceCache};
+use ethcore::state_db::StateDB;
 use ethcore::trace::{Tracer, VMTracer};
 use rustc_hex::FromHex;
 use ethkey::Password;
@@ -139,7 +140,7 @@ pub struct Provider {
 	transactions_for_signing: RwLock<SigningStore>,
 	transactions_for_verification: VerificationStore,
 	client: Arc<Client>,
-	miner: Arc<Miner>,
+	miner: Arc<Miner<StateDB>>,
 	accounts: Arc<AccountProvider>,
 	channel: IoChannel<ClientIoMessage>,
 }
@@ -156,7 +157,7 @@ impl Provider where {
 	/// Create a new provider.
 	pub fn new(
 		client: Arc<Client>,
-		miner: Arc<Miner>,
+		miner: Arc<Miner<StateDB>>,
 		accounts: Arc<AccountProvider>,
 		encryptor: Box<Encryptor>,
 		config: ProviderConfig,
@@ -244,7 +245,7 @@ impl Provider where {
 		keccak(&state_buf.as_ref())
 	}
 
-	fn pool_client<'a>(&'a self, nonce_cache: &'a NonceCache) -> miner::pool_client::PoolClient<'a, Client> {
+	fn pool_client<'a>(&'a self, nonce_cache: &'a NonceCache) -> miner::pool_client::PoolClient<'a, Client, StateDB> {
 		let engine = self.client.engine();
 		let refuse_service_transactions = true;
 		miner::pool_client::PoolClient::new(
@@ -371,7 +372,7 @@ impl Provider where {
 			}
 		}
 		Ok(())
- 	}
+	}
 
 	fn last_required_signature(&self, desc: &PrivateTransactionSigningDesc, sign: Signature) -> Result<bool, Error>  {
 		if desc.received_signatures.contains(&sign) {

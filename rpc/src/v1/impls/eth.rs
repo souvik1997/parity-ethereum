@@ -173,7 +173,9 @@ impl<C, SN: ?Sized, S: ?Sized, M, EM, T: StateInfo + 'static> EthClient<C, SN, S
 	SN: SnapshotService,
 	S: SyncProvider,
 	M: MinerService<State=T>,
-	EM: ExternalMinerService {
+	EM: ExternalMinerService,
+	<C as EngineInfo>::EngineStateBackend: 'static
+{
 
 	/// Creates new EthClient.
 	pub fn new(
@@ -480,11 +482,11 @@ fn check_known<C>(client: &C, number: BlockNumber) -> Result<()> where C: BlockC
 const MAX_QUEUE_SIZE_TO_MINE_ON: usize = 4;	// because uncles go back 6.
 
 impl<C, SN: ?Sized, S: ?Sized, M, EM, T: StateInfo + 'static> Eth for EthClient<C, SN, S, M, EM> where
-	C: miner::BlockChainClient + BlockChainClient + StateClient<State=T> + Call<State=T> + EngineInfo + 'static,
+	M: MinerService<State=T> + 'static,
 	SN: SnapshotService + 'static,
 	S: SyncProvider + 'static,
-	M: MinerService<State=T> + 'static,
 	EM: ExternalMinerService + 'static,
+	C: miner::BlockChainClient + BlockChainClient + StateClient<State=T> + Call<State=T> + EngineInfo + ::ethcore::client::ReopenBlock<ReopenBlockStateBackend = M::StateBackend> + ::ethcore::client::PrepareOpenBlock<PrepareOpenBlockStateBackend = M::StateBackend> + ::ethcore::client::ImportSealedBlock<ImportSealedBlockStateBackend = M::StateBackend> +::ethcore::client::BroadcastProposalBlock<BroadcastProposalBlockStateBackend = M::StateBackend> + 'static,
 {
 	type Metadata = Metadata;
 

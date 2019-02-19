@@ -35,6 +35,7 @@ use std::net::{SocketAddr, IpAddr};
 use core::futures::future::{self, FutureResult};
 use core::futures::{self, Future};
 use ethcore::client::BlockChainClient;
+use ethcore::state_db::StateDB;
 use http::hyper::{self, server, Method, StatusCode, Body,
 	header::{self, HeaderValue},
 };
@@ -51,15 +52,15 @@ pub struct IpfsHandler {
 	/// Hostnames allowed in the `Host` request header
 	allowed_hosts: Option<Vec<Host>>,
 	/// Reference to the Blockchain Client
-	client: Arc<BlockChainClient>,
+	client: Arc<BlockChainClient<StateBackend = StateDB>>,
 }
 
 impl IpfsHandler {
-	pub fn client(&self) -> &BlockChainClient {
+	pub fn client(&self) -> &BlockChainClient<StateBackend = StateDB> {
 		&*self.client
 	}
 
-	pub fn new(cors: DomainsValidation<AccessControlAllowOrigin>, hosts: DomainsValidation<Host>, client: Arc<BlockChainClient>) -> Self {
+	pub fn new(cors: DomainsValidation<AccessControlAllowOrigin>, hosts: DomainsValidation<Host>, client: Arc<BlockChainClient<StateBackend = StateDB>>) -> Self {
 		IpfsHandler {
 			cors_domains: cors.into(),
 			allowed_hosts: hosts.into(),
@@ -154,7 +155,7 @@ pub fn start_server(
 	interface: String,
 	cors: DomainsValidation<AccessControlAllowOrigin>,
 	hosts: DomainsValidation<Host>,
-	client: Arc<BlockChainClient>
+	client: Arc<BlockChainClient<StateBackend = StateDB>>
 ) -> Result<Listening, ServerError> {
 
 	let ip: IpAddr = interface.parse().map_err(|_| ServerError::InvalidInterface)?;
@@ -182,12 +183,12 @@ pub fn start_server(
 		};
 
 		let server = server_bldr
-	        .serve(new_service)
-	        .map_err(|_| ())
-	        .select(shutdown_signal.map_err(|_| ()))
-	        .then(|_| Ok(()));
+					.serve(new_service)
+					.map_err(|_| ())
+					.select(shutdown_signal.map_err(|_| ()))
+					.then(|_| Ok(()));
 
-	    hyper::rt::run(server);
+			hyper::rt::run(server);
 		send(Ok(()));
 	});
 

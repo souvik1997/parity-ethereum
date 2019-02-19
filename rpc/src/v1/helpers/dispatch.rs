@@ -127,7 +127,7 @@ impl<C, M> Clone for FullDispatcher<C, M> {
 	}
 }
 
-impl<C: miner::BlockChainClient, M: MinerService> FullDispatcher<C, M> {
+impl<C, M: MinerService> FullDispatcher<C, M> where C: miner::BlockChainClient<ImportSealedBlockStateBackend = M::StateBackend> + miner::BlockChainClient<ReopenBlockStateBackend = M::StateBackend> + miner::BlockChainClient<PrepareOpenBlockStateBackend = M::StateBackend> + miner::BlockChainClient<BroadcastProposalBlockStateBackend = M::StateBackend> {
 	fn state_nonce(&self, from: &Address) -> U256 {
 		self.miner.next_nonce(&*self.client, from)
 	}
@@ -145,7 +145,7 @@ impl<C: miner::BlockChainClient, M: MinerService> FullDispatcher<C, M> {
 	}
 }
 
-impl<C: miner::BlockChainClient + BlockChainClient, M: MinerService> Dispatcher for FullDispatcher<C, M> {
+impl<C: miner::BlockChainClient + BlockChainClient, M: MinerService> Dispatcher for FullDispatcher<C, M> where C: miner::BlockChainClient<ImportSealedBlockStateBackend = M::StateBackend> + miner::BlockChainClient<ReopenBlockStateBackend = M::StateBackend> + miner::BlockChainClient<PrepareOpenBlockStateBackend = M::StateBackend> + miner::BlockChainClient<BroadcastProposalBlockStateBackend = M::StateBackend> {
 	fn fill_optional_fields(&self, request: TransactionRequest, default_sender: Address, force_nonce: bool)
 		-> BoxFuture<FilledTransactionRequest>
 	{

@@ -43,6 +43,7 @@ use lru_cache::LruCache;
 use parking_lot::Mutex;
 
 use ethcore::client::{BlockChainClient, BlockId};
+use ethcore::state_db::StateDB;
 use ethereum_types::{H256, Address};
 use ethabi::FunctionOutputDecoder;
 use network::{ConnectionFilter, ConnectionDirection};
@@ -54,14 +55,14 @@ const MAX_CACHE_SIZE: usize = 4096;
 
 /// Connection filter that uses a contract to manage permissions.
 pub struct NodeFilter {
-	client: Weak<BlockChainClient>,
+	client: Weak<BlockChainClient<StateBackend = StateDB>>,
 	contract_address: Address,
 	permission_cache: Mutex<LruCache<(H256, NodeId), bool>>,
 }
 
 impl NodeFilter {
 	/// Create a new instance. Accepts a contract address.
-	pub fn new(client: Weak<BlockChainClient>, contract_address: Address) -> NodeFilter {
+	pub fn new(client: Weak<BlockChainClient<StateBackend = StateDB>>, contract_address: Address) -> NodeFilter {
 		NodeFilter {
 			client,
 			contract_address,
@@ -115,6 +116,7 @@ mod test {
 	use ethcore::client::{BlockChainClient, Client, ClientConfig};
 	use ethcore::miner::Miner;
 	use ethcore::test_helpers;
+	use ethcore::state_db::StateDB;
 	use network::{ConnectionDirection, ConnectionFilter, NodeId};
 	use io::IoChannel;
 	use super::NodeFilter;
@@ -136,7 +138,7 @@ mod test {
 			Arc::new(Miner::new_for_tests(&spec, None)),
 			IoChannel::disconnected(),
 		).unwrap();
-		let filter = NodeFilter::new(Arc::downgrade(&client) as Weak<BlockChainClient>, contract_addr);
+		let filter = NodeFilter::new(Arc::downgrade(&client) as Weak<BlockChainClient<StateBackend = StateDB>>, contract_addr);
 		let self1: NodeId = "00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002".into();
 		let self2: NodeId = "00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000003".into();
 		let node1: NodeId = "00000000000000000000000000000000000000000000000000000000000000110000000000000000000000000000000000000000000000000000000000000012".into();

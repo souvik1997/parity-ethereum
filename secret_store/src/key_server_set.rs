@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, HashSet};
 use parking_lot::Mutex;
 use ethabi::FunctionOutputDecoder;
 use ethcore::client::{Client, BlockChainClient, BlockId, ChainNotify, NewBlocks, CallContract};
+use ethcore::state_db::StateDB;
 use ethereum_types::{H256, Address};
 use ethkey::public_to_address;
 use bytes::Bytes;
@@ -465,7 +466,7 @@ impl CachedContract {
 		key_servers
 	}
 
-	fn update_number_of_confirmations_if_required(&mut self, client: &BlockChainClient) {
+	fn update_number_of_confirmations_if_required(&mut self, client: &BlockChainClient<StateBackend = StateDB>) {
 		if !self.auto_migrate_enabled {
 			return;
 		}
@@ -568,11 +569,11 @@ fn update_last_transaction_block(client: &Client, migration_id: &H256, previous_
 	true
 }
 
-fn latest_block_hash(client: &BlockChainClient) -> H256 {
+fn latest_block_hash(client: &BlockChainClient<StateBackend = StateDB>) -> H256 {
 	client.block_hash(BlockId::Latest).unwrap_or_default()
 }
 
-fn block_confirmations(client: &BlockChainClient, block: H256) -> Option<u64> {
+fn block_confirmations(client: &BlockChainClient<StateBackend = StateDB>, block: H256) -> Option<u64> {
 	client.block_number(BlockId::Hash(block))
 		.and_then(|block| client.block_number(BlockId::Latest).map(|last_block| (block, last_block)))
 		.map(|(block, last_block)| last_block - block)

@@ -26,6 +26,7 @@ use parking_lot::RwLock;
 use client::EngineClient;
 use header::{Header, BlockNumber};
 use machine::{AuxiliaryData, Call, EthereumMachine};
+use state::backend::Backend;
 
 use super::{ValidatorSet, SimpleList, SystemCall};
 use super::safe_contract::ValidatorSafeContract;
@@ -33,13 +34,13 @@ use super::safe_contract::ValidatorSafeContract;
 use_contract!(validator_report, "res/contracts/validator_report.json");
 
 /// A validator contract with reporting.
-pub struct ValidatorContract {
+pub struct ValidatorContract<B: Backend + Clone> {
 	contract_address: Address,
-	validators: ValidatorSafeContract,
-	client: RwLock<Option<Weak<EngineClient>>>, // TODO [keorn]: remove
+	validators: ValidatorSafeContract<B>,
+	client: RwLock<Option<Weak<EngineClient<StateBackend = B>>>>, // TODO [keorn]: remove
 }
 
-impl ValidatorContract {
+impl<B: Backend + Clone> ValidatorContract<B> {
 	pub fn new(contract_address: Address) -> Self {
 		ValidatorContract {
 			contract_address,
@@ -49,7 +50,7 @@ impl ValidatorContract {
 	}
 }
 
-impl ValidatorContract {
+impl<B: Backend + Clone> ValidatorContract<B> {
 	fn transact(&self, data: Bytes) -> Result<(), String> {
 		let client = self.client.read().as_ref()
 			.and_then(Weak::upgrade)
@@ -66,7 +67,9 @@ impl ValidatorContract {
 	}
 }
 
-impl ValidatorSet for ValidatorContract {
+impl<B: Backend + Clone + 'static> ValidatorSet for ValidatorContract<B> {
+	type MachineStateBackend = B;
+
 	fn default_caller(&self, id: ::ids::BlockId) -> Box<Call> {
 		self.validators.default_caller(id)
 	}
@@ -88,11 +91,11 @@ impl ValidatorSet for ValidatorContract {
 		first: bool,
 		header: &Header,
 		aux: AuxiliaryData,
-	) -> ::engines::EpochChange<EthereumMachine> {
+	) -> ::engines::EpochChange<EthereumMachine<B>> {
 		self.validators.signals_epoch_end(first, header, aux)
 	}
 
-	fn epoch_set(&self, first: bool, machine: &EthereumMachine, number: BlockNumber, proof: &[u8]) -> Result<(SimpleList, Option<H256>), ::error::Error> {
+	fn epoch_set(&self, first: bool, machine: &EthereumMachine<B>, number: BlockNumber, proof: &[u8]) -> Result<(SimpleList<B>, Option<H256>), ::error::Error> {
 		self.validators.epoch_set(first, machine, number, proof)
 	}
 
@@ -124,7 +127,7 @@ impl ValidatorSet for ValidatorContract {
 		}
 	}
 
-	fn register_client(&self, client: Weak<EngineClient>) {
+	fn register_client(&self, client: Weak<EngineClient<StateBackend = B>>) {
 		self.validators.register_client(client.clone());
 		*self.client.write() = Some(client);
 	}

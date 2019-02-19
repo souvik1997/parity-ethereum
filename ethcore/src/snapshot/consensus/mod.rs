@@ -23,6 +23,7 @@ use std::sync::Arc;
 use blockchain::{BlockChain, BlockChainDB};
 use engines::EthEngine;
 use snapshot::{Error, ManifestData, Progress};
+use state::backend::Backend;
 
 use ethereum_types::H256;
 
@@ -37,6 +38,9 @@ pub type ChunkSink<'a> = FnMut(&[u8]) -> ::std::io::Result<()> + 'a;
 
 /// Components necessary for snapshot creation and restoration.
 pub trait SnapshotComponents: Send {
+
+	type StateBackend: Backend + Clone;
+
 	/// Create secondary snapshot chunks; these corroborate the state data
 	/// in the state chunks.
 	///
@@ -65,7 +69,7 @@ pub trait SnapshotComponents: Send {
 		chain: BlockChain,
 		db: Arc<BlockChainDB>,
 		manifest: &ManifestData,
-	) -> Result<Box<Rebuilder>, ::error::Error>;
+	) -> Result<Box<Rebuilder<EngineStateBackend = Self::StateBackend>>, ::error::Error>;
 
 	/// Minimum supported snapshot version number.
 	fn min_supported_version(&self) -> u64;
@@ -76,6 +80,9 @@ pub trait SnapshotComponents: Send {
 
 /// Restore from secondary snapshot chunks.
 pub trait Rebuilder: Send {
+
+	type EngineStateBackend: Backend + Clone;
+
 	/// Feed a chunk, potentially out of order.
 	///
 	/// Check `abort_flag` periodically while doing heavy work. If set to `false`, should bail with
@@ -83,7 +90,7 @@ pub trait Rebuilder: Send {
 	fn feed(
 		&mut self,
 		chunk: &[u8],
-		engine: &EthEngine,
+		engine: &EthEngine<Self::EngineStateBackend>,
 		abort_flag: &AtomicBool,
 	) -> Result<(), ::error::Error>;
 
@@ -92,5 +99,5 @@ pub trait Rebuilder: Send {
 	///
 	/// This should apply the necessary "glue" between chunks,
 	/// and verify against the restored state.
-	fn finalize(&mut self, engine: &EthEngine) -> Result<(), ::error::Error>;
+	fn finalize(&mut self, engine: &EthEngine<Self::EngineStateBackend>) -> Result<(), ::error::Error>;
 }

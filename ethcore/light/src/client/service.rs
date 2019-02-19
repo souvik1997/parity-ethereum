@@ -24,6 +24,7 @@ use ethcore::client::ClientIoMessage;
 use ethcore::{db, BlockChainDB};
 use ethcore::error::Error as CoreError;
 use ethcore::spec::Spec;
+use ethcore::state_db::StateDB;
 use io::{IoContext, IoError, IoHandler, IoService};
 
 use cache::Cache;
@@ -64,7 +65,7 @@ pub struct Service<T> {
 
 impl<T: ChainDataFetcher> Service<T> {
 	/// Start the service: initialize I/O workers and client itself.
-	pub fn start(config: ClientConfig, spec: &Spec, fetcher: T, db: Arc<BlockChainDB>, cache: Arc<Mutex<Cache>>) -> Result<Self, Error> {
+	pub fn start(config: ClientConfig, spec: &Spec<StateDB>, fetcher: T, db: Arc<BlockChainDB>, cache: Arc<Mutex<Cache>>) -> Result<Self, Error> {
 		let io_service = IoService::<ClientIoMessage>::start().map_err(Error::Io)?;
 		let client = Arc::new(Client::new(config,
 			db.key_value().clone(),

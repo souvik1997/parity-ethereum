@@ -23,6 +23,8 @@ use super::{SnapshotComponents, Rebuilder, ChunkSink};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 
 use blockchain::{BlockChain, BlockChainDB, BlockProvider};
 use engines::{EthEngine, EpochVerifier, EpochTransition};
@@ -31,6 +33,7 @@ use ids::BlockId;
 use header::Header;
 use receipt::Receipt;
 use snapshot::{Error, ManifestData, Progress};
+use state::backend::Backend;
 
 use itertools::{Position, Itertools};
 use rlp::{RlpStream, Rlp};
@@ -51,9 +54,19 @@ use encoded;
 ///
 /// The last item of the last chunk will be a list containing data for the warp target block:
 /// [header, transactions, uncles, receipts, parent_td].
-pub struct PoaSnapshot;
+pub struct PoaSnapshot<B>{ _phantom: SafePhantomData<B> }
 
-impl SnapshotComponents for PoaSnapshot {
+impl<B> PoaSnapshot<B> {
+	pub fn new() -> Self {
+		Self {
+			_phantom: PhantomData
+		}
+	}
+}
+
+impl<B: Backend + Clone + 'static> SnapshotComponents for PoaSnapshot<B> {
+	type StateBackend = B;
+
 	fn chunk_all(
 		&mut self,
 		chain: &BlockChain,
@@ -131,7 +144,7 @@ impl SnapshotComponents for PoaSnapshot {
 		chain: BlockChain,
 		db: Arc<BlockChainDB>,
 		manifest: &ManifestData,
-	) -> Result<Box<Rebuilder>, ::error::Error> {
+	) -> Result<Box<Rebuilder<EngineStateBackend = B>>, ::error::Error> {
 		Ok(Box::new(ChunkRebuilder {
 			manifest: manifest.clone(),
 			warp_target: None,
@@ -162,7 +175,7 @@ fn write_chunk(last: bool, chunk_data: &mut Vec<Bytes>, sink: &mut ChunkSink) ->
 
 // rebuilder checks state proofs for all transitions, and checks that each
 // transition header is verifiable from the epoch data of the one prior.
-struct ChunkRebuilder {
+struct ChunkRebuilder<B: Backend + Clone> {
 	manifest: ManifestData,
 	warp_target: Option<Header>,
 	chain: BlockChain,
@@ -173,7 +186,7 @@ struct ChunkRebuilder {
 	// and epoch data from last blocks in chunks.
 	// verification for these will be done at the end.
 	unverified_firsts: Vec<(Header, Bytes, H256)>,
-	last_epochs: Vec<(Header, Box<EpochVerifier<EthereumMachine>>)>,
+	last_epochs: Vec<(Header, Box<EpochVerifier<EthereumMachine<B>>>)>,
 }
 
 // verified data.
@@ -182,12 +195,12 @@ struct Verified {
 	header: Header,
 }
 
-impl ChunkRebuilder {
+impl<B: Backend + Clone + 'static> ChunkRebuilder<B> {
 	fn verify_transition(
 		&mut self,
-		last_verifier: &mut Option<Box<EpochVerifier<EthereumMachine>>>,
+		last_verifier: &mut Option<Box<EpochVerifier<EthereumMachine<B>>>>,
 		transition_rlp: Rlp,
-		engine: &EthEngine,
+		engine: &EthEngine<B>,
 	) -> Result<Verified, ::error::Error> {
 		use engines::ConstructedVerifier;
 
@@ -239,11 +252,12 @@ impl ChunkRebuilder {
 	}
 }
 
-impl Rebuilder for ChunkRebuilder {
+impl<B: Backend + Clone + 'static> Rebuilder for ChunkRebuilder<B> {
+	type EngineStateBackend = B;
 	fn feed(
 		&mut self,
 		chunk: &[u8],
-		engine: &EthEngine,
+		engine: &EthEngine<B>,
 		abort_flag: &AtomicBool,
 	) -> Result<(), ::error::Error> {
 		let rlp = Rlp::new(chunk);
@@ -352,7 +366,7 @@ impl Rebuilder for ChunkRebuilder {
 		Ok(())
 	}
 
-	fn finalize(&mut self, _engine: &EthEngine) -> Result<(), ::error::Error> {
+	fn finalize(&mut self, _engine: &EthEngine<B>) -> Result<(), ::error::Error> {
 		if !self.had_genesis {
 			return Err(Error::WrongChunkFormat("No genesis transition included.".into()).into());
 		}

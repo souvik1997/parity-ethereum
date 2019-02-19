@@ -49,6 +49,7 @@ use error::Error;
 use header::{Header, BlockNumber};
 use snapshot::SnapshotComponents;
 use spec::CommonParams;
+use state::backend::Backend;
 use transaction::{self, UnverifiedTransaction, SignedTransaction};
 
 use ethkey::{Password, Signature};
@@ -146,7 +147,7 @@ pub enum SystemOrCodeCallKind {
 }
 
 /// Default SystemOrCodeCall implementation.
-pub fn default_system_or_code_call<'a>(machine: &'a ::machine::EthereumMachine, block: &'a mut ::block::ExecutedBlock) -> impl FnMut(SystemOrCodeCallKind, Vec<u8>) -> Result<Vec<u8>, String> + 'a {
+pub fn default_system_or_code_call<'a, B: Backend + Clone>(machine: &'a ::machine::EthereumMachine<B>, block: &'a mut ::block::ExecutedBlock<B>) -> impl FnMut(SystemOrCodeCallKind, Vec<u8>) -> Result<Vec<u8>, String> + 'a {
 	move |to, data| {
 		let result = match to {
 			SystemOrCodeCallKind::Address(address) => {
@@ -405,7 +406,7 @@ pub trait Engine<M: Machine>: Sync + Send {
 
 	/// Create a factory for building snapshot chunks and restoring from them.
 	/// Returning `None` indicates that this engine doesn't support snapshot creation.
-	fn snapshot_components(&self) -> Option<Box<SnapshotComponents>> {
+	fn snapshot_components(&self) -> Option<Box<SnapshotComponents<StateBackend = M::StateBackend>>> {
 		None
 	}
 
@@ -450,7 +451,7 @@ pub fn total_difficulty_fork_choice<T: TotalScoredHeader>(new: &T, best: &T) -> 
 // TODO: make this a _trait_ alias when those exist.
 // fortunately the effect is largely the same since engines are mostly used
 // via trait objects.
-pub trait EthEngine: Engine<::machine::EthereumMachine> {
+pub trait EthEngine<B: Backend + Clone + 'static>: Engine<::machine::EthereumMachine<B>> {
 	/// Get the general parameters of the chain.
 	fn params(&self) -> &CommonParams {
 		self.machine().params()
@@ -530,4 +531,4 @@ pub trait EthEngine: Engine<::machine::EthereumMachine> {
 }
 
 // convenience wrappers for existing functions.
-impl<T> EthEngine for T where T: Engine<::machine::EthereumMachine> { }
+impl<T, B: Backend + Clone + 'static> EthEngine<B> for T where T: Engine<::machine::EthereumMachine<B>> { }

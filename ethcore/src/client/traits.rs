@@ -36,6 +36,7 @@ use transaction::{self, LocalizedTransaction, SignedTransaction};
 use verification::queue::QueueInfo as BlockQueueInfo;
 use verification::queue::kind::blocks::Unverified;
 use state::{StateInfo, backend::Proof};
+use state::backend::Backend;
 use header::Header;
 use engines::EthEngine;
 
@@ -195,8 +196,9 @@ pub trait Call {
 
 /// Provides `engine` method
 pub trait EngineInfo {
+	type EngineStateBackend: Backend + Clone;
 	/// Get underlying engine object
-	fn engine(&self) -> &EthEngine;
+	fn engine(&self) -> &EthEngine<Self::EngineStateBackend>;
 }
 
 /// IO operations that should off-load heavy work to another thread.
@@ -218,8 +220,10 @@ pub trait BadBlocks {
 }
 
 /// Blockchain database client. Owns and manages a blockchain and a block queue.
-pub trait BlockChainClient : Sync + Send + AccountData + BlockChain + CallContract + RegistryInfo + ImportBlock
-+ IoClient + BadBlocks {
+pub trait BlockChainClient : Sync + Send + AccountData + BlockChain + CallContract + RegistryInfo + ImportBlock + IoClient + BadBlocks {
+
+	type StateBackend: Backend + Clone;
+
 	/// Look up the block number for the given block ID.
 	fn block_number(&self, id: BlockId) -> Option<BlockNumber>;
 
@@ -396,18 +400,20 @@ pub trait BlockChainClient : Sync + Send + AccountData + BlockChain + CallContra
 
 /// Provides `reopen_block` method
 pub trait ReopenBlock {
+	type ReopenBlockStateBackend: Backend + Clone;
 	/// Reopens an OpenBlock and updates uncles.
-	fn reopen_block(&self, block: ClosedBlock) -> OpenBlock;
+	fn reopen_block(&self, block: ClosedBlock<Self::ReopenBlockStateBackend>) -> OpenBlock<Self::ReopenBlockStateBackend>;
 }
 
 /// Provides `prepare_open_block` method
 pub trait PrepareOpenBlock {
+	type PrepareOpenBlockStateBackend: Backend + Clone;
 	/// Returns OpenBlock prepared for closing.
 	fn prepare_open_block(&self,
 		author: Address,
 		gas_range_target: (U256, U256),
 		extra_data: Bytes
-	) -> Result<OpenBlock, Error>;
+	) -> Result<OpenBlock<Self::PrepareOpenBlockStateBackend>, Error>;
 }
 
 /// Provides methods used for sealing new state
@@ -421,14 +427,16 @@ pub trait ScheduleInfo {
 
 ///Provides `import_sealed_block` method
 pub trait ImportSealedBlock {
+	type ImportSealedBlockStateBackend: Backend + Clone;
 	/// Import sealed block. Skips all verifications.
-	fn import_sealed_block(&self, block: SealedBlock) -> EthcoreResult<H256>;
+	fn import_sealed_block(&self, block: SealedBlock<Self::ImportSealedBlockStateBackend>) -> EthcoreResult<H256>;
 }
 
 /// Provides `broadcast_proposal_block` method
 pub trait BroadcastProposalBlock {
+	type BroadcastProposalBlockStateBackend: Backend + Clone;
 	/// Broadcast a block proposal.
-	fn broadcast_proposal_block(&self, block: SealedBlock);
+	fn broadcast_proposal_block(&self, block: SealedBlock<Self::BroadcastProposalBlockStateBackend>);
 }
 
 /// Provides methods to import sealed block and broadcast a block proposal
@@ -436,6 +444,9 @@ pub trait SealedBlockImporter: ImportSealedBlock + BroadcastProposalBlock {}
 
 /// Client facilities used by internally sealing Engines.
 pub trait EngineClient: Sync + Send + ChainInfo {
+
+	type StateBackend: Backend + Clone;
+
 	/// Make a new block and seal it.
 	fn update_sealing(&self);
 
@@ -453,7 +464,7 @@ pub trait EngineClient: Sync + Send + ChainInfo {
 	fn epoch_transition_for(&self, parent_hash: H256) -> Option<::engines::EpochTransition>;
 
 	/// Attempt to cast the engine client to a full client.
-	fn as_full_client(&self) -> Option<&BlockChainClient>;
+	fn as_full_client(&self) -> Option<&BlockChainClient<StateBackend = Self::StateBackend>>;
 
 	/// Get a block number by ID.
 	fn block_number(&self, id: BlockId) -> Option<BlockNumber>;

@@ -19,6 +19,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::cmp;
 use std::sync::Arc;
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 
 use block::{ExecutedBlock, IsBlock};
 use builtin::Builtin;
@@ -27,7 +29,7 @@ use error::Error;
 use executive::Executive;
 use header::{BlockNumber, Header, ExtendedHeader};
 use spec::CommonParams;
-use state::{CleanupMode, Substate};
+use state::{CleanupMode, Substate, backend::Backend};
 use trace::{NoopTracer, NoopVMTracer, Tracer, ExecutiveTracer, RewardType, Tracing};
 use transaction::{self, SYSTEM_ADDRESS, UNSIGNED_SENDER, UnverifiedTransaction, SignedTransaction};
 use tx_filter::TransactionFilter;
@@ -68,17 +70,18 @@ impl From<::ethjson::spec::EthashParams> for EthashExtensions {
 pub type ScheduleCreationRules = Fn(&mut Schedule, BlockNumber) + Sync + Send;
 
 /// An ethereum-like state machine.
-pub struct EthereumMachine {
+pub struct EthereumMachine<B: Backend + Clone> {
 	params: CommonParams,
 	builtins: Arc<BTreeMap<Address, Builtin>>,
 	tx_filter: Option<Arc<TransactionFilter>>,
 	ethash_extensions: Option<EthashExtensions>,
 	schedule_rules: Option<Box<ScheduleCreationRules>>,
+	_phantom: SafePhantomData<B>
 }
 
-impl EthereumMachine {
+impl<B: Backend + Clone> EthereumMachine<B> {
 	/// Regular ethereum machine.
-	pub fn regular(params: CommonParams, builtins: BTreeMap<Address, Builtin>) -> EthereumMachine {
+	pub fn regular(params: CommonParams, builtins: BTreeMap<Address, Builtin>) -> EthereumMachine<B> {
 		let tx_filter = TransactionFilter::from_params(&params).map(Arc::new);
 		EthereumMachine {
 			params: params,
@@ -86,12 +89,13 @@ impl EthereumMachine {
 			tx_filter: tx_filter,
 			ethash_extensions: None,
 			schedule_rules: None,
+			_phantom: PhantomData,
 		}
 	}
 
 	/// Ethereum machine with ethash extensions.
 	// TODO: either unify or specify to mainnet specifically and include other specific-chain HFs?
-	pub fn with_ethash_extensions(params: CommonParams, builtins: BTreeMap<Address, Builtin>, extensions: EthashExtensions) -> EthereumMachine {
+	pub fn with_ethash_extensions(params: CommonParams, builtins: BTreeMap<Address, Builtin>, extensions: EthashExtensions) -> EthereumMachine<B> {
 		let mut machine = EthereumMachine::regular(params, builtins);
 		machine.ethash_extensions = Some(extensions);
 		machine
@@ -108,7 +112,7 @@ impl EthereumMachine {
 	}
 }
 
-impl EthereumMachine {
+impl<B: Backend + Clone> EthereumMachine<B> {
 	/// Execute a call as the system address. Block environment information passed to the
 	/// VM is modified to have its gas limit bounded at the upper limit of possible used
 	/// gases including this system call, capped at the maximum value able to be
@@ -118,7 +122,7 @@ impl EthereumMachine {
 	/// on the block.
 	pub fn execute_as_system(
 		&self,
-		block: &mut ExecutedBlock,
+		block: &mut ExecutedBlock<B>,
 		contract_address: Address,
 		gas: U256,
 		data: Option<Vec<u8>>,
@@ -147,7 +151,7 @@ impl EthereumMachine {
 	/// not form a transaction.
 	pub fn execute_code_as_system(
 		&self,
-		block: &mut ExecutedBlock,
+		block: &mut ExecutedBlock<B>,
 		contract_address: Option<Address>,
 		code: Option<Arc<Vec<u8>>>,
 		code_hash: Option<H256>,
@@ -189,7 +193,7 @@ impl EthereumMachine {
 	}
 
 	/// Push last known block hash to the state.
-	fn push_last_hash(&self, block: &mut ExecutedBlock) -> Result<(), Error> {
+	fn push_last_hash(&self, block: &mut ExecutedBlock<B>) -> Result<(), Error> {
 		let params = self.params();
 		if block.header().number() == params.eip210_transition {
 			let state = block.state_mut();
@@ -209,7 +213,7 @@ impl EthereumMachine {
 
 	/// Logic to perform on a new block: updating last hashes and the DAO
 	/// fork, for ethash.
-	pub fn on_new_block(&self, block: &mut ExecutedBlock) -> Result<(), Error> {
+	pub fn on_new_block(&self, block: &mut ExecutedBlock<B>) -> Result<(), Error> {
 		self.push_last_hash(block)?;
 
 		if let Some(ref ethash_params) = self.ethash_extensions {
@@ -426,29 +430,30 @@ pub enum AuxiliaryRequest {
 	Both,
 }
 
-impl ::parity_machine::Machine for EthereumMachine {
+impl<B: Backend + Clone + 'static> ::parity_machine::Machine for EthereumMachine<B> {
 	type Header = Header;
 	type ExtendedHeader = ExtendedHeader;
 
-	type LiveBlock = ExecutedBlock;
-	type EngineClient = ::client::EngineClient;
+	type StateBackend = B;
+	type LiveBlock = ExecutedBlock<B>;
+	type EngineClient = ::client::EngineClient<StateBackend = B>;
 	type AuxiliaryRequest = AuxiliaryRequest;
 	type AncestryAction = ::types::ancestry_action::AncestryAction;
 
 	type Error = Error;
 }
 
-impl<'a> ::parity_machine::LocalizedMachine<'a> for EthereumMachine {
+impl<'a, B: Backend + Clone> ::parity_machine::LocalizedMachine<'a> for EthereumMachine<B> {
 	type StateContext = Call<'a>;
 	type AuxiliaryData = AuxiliaryData<'a>;
 }
 
-impl ::parity_machine::WithBalances for EthereumMachine {
-	fn balance(&self, live: &ExecutedBlock, address: &Address) -> Result<U256, Error> {
+impl<B: Backend + Clone + 'static> ::parity_machine::WithBalances for EthereumMachine<B> {
+	fn balance(&self, live: &ExecutedBlock<B>, address: &Address) -> Result<U256, Error> {
 		live.state().balance(address).map_err(Into::into)
 	}
 
-	fn add_balance(&self, live: &mut ExecutedBlock, address: &Address, amount: &U256) -> Result<(), Error> {
+	fn add_balance(&self, live: &mut ExecutedBlock<B>, address: &Address, amount: &U256) -> Result<(), Error> {
 		live.state_mut().add_balance(address, amount, CleanupMode::NoEmpty).map_err(Into::into)
 	}
 }
@@ -464,7 +469,7 @@ pub trait WithRewards: ::parity_machine::Machine {
 	) -> Result<(), Self::Error>;
 }
 
-impl WithRewards for EthereumMachine {
+impl<B: Backend + Clone + 'static> WithRewards for EthereumMachine<B> {
 	fn note_rewards(
 		&self,
 		live: &mut Self::LiveBlock,
@@ -503,6 +508,7 @@ fn round_block_gas_limit(gas_limit: U256, lower_limit: U256, upper_limit: U256) 
 
 #[cfg(test)]
 mod tests {
+	use state_db::StateDB;
 	use super::*;
 
 	fn get_default_ethash_extensions() -> EthashExtensions {
@@ -518,10 +524,10 @@ mod tests {
 	fn should_disallow_unsigned_transactions() {
 		let rlp = "ea80843b9aca0083015f90948921ebb5f79e9e3920abe571004d0b1d5119c154865af3107a400080038080".into();
 		let transaction: UnverifiedTransaction = ::rlp::decode(&::rustc_hex::FromHex::from_hex(rlp).unwrap()).unwrap();
-		let spec = ::ethereum::new_ropsten_test();
+		let spec = ::ethereum::new_ropsten_test::<StateDB>();
 		let ethparams = get_default_ethash_extensions();
 
-		let machine = EthereumMachine::with_ethash_extensions(
+		let machine = EthereumMachine::<StateDB>::with_ethash_extensions(
 			spec.params().clone(),
 			Default::default(),
 			ethparams,
@@ -537,10 +543,10 @@ mod tests {
 	fn ethash_gas_limit_is_multiple_of_determinant() {
 		use ethereum_types::U256;
 
-		let spec = ::ethereum::new_homestead_test();
+		let spec = ::ethereum::new_homestead_test::<StateDB>();
 		let ethparams = get_default_ethash_extensions();
 
-		let machine = EthereumMachine::with_ethash_extensions(
+		let machine = EthereumMachine::<StateDB>::with_ethash_extensions(
 			spec.params().clone(),
 			Default::default(),
 			ethparams,

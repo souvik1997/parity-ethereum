@@ -33,6 +33,7 @@ use ethcore::snapshot::service::{Service as SnapshotService, ServiceParams as Sn
 use ethcore::snapshot::{SnapshotService as _SnapshotService, RestorationStatus};
 use ethcore::spec::Spec;
 use ethcore::account_provider::AccountProvider;
+use ethcore::state_db::StateDB;
 
 use ethcore_private_tx::{self, Importer};
 use Error;
@@ -80,7 +81,7 @@ impl PrivateTxHandler for PrivateTxService {
 pub struct ClientService {
 	io_service: Arc<IoService<ClientIoMessage>>,
 	client: Arc<Client>,
-	snapshot: Arc<SnapshotService>,
+	snapshot: Arc<SnapshotService<StateDB>>,
 	private_tx: Arc<PrivateTxService>,
 	database: Arc<BlockChainDB>,
 	_stop_guard: StopGuard,
@@ -90,12 +91,12 @@ impl ClientService {
 	/// Start the `ClientService`.
 	pub fn start(
 		config: ClientConfig,
-		spec: &Spec,
+		spec: &Spec<StateDB>,
 		blockchain_db: Arc<BlockChainDB>,
 		snapshot_path: &Path,
 		restoration_db_handler: Box<BlockChainDBHandler>,
 		_ipc_path: &Path,
-		miner: Arc<Miner>,
+		miner: Arc<Miner<StateDB>>,
 		account_provider: Arc<AccountProvider>,
 		encryptor: Box<ethcore_private_tx::Encryptor>,
 		private_tx_conf: ethcore_private_tx::ProviderConfig,
@@ -168,7 +169,7 @@ impl ClientService {
 	}
 
 	/// Get snapshot interface.
-	pub fn snapshot_service(&self) -> Arc<SnapshotService> {
+	pub fn snapshot_service(&self) -> Arc<SnapshotService<StateDB>> {
 		self.snapshot.clone()
 	}
 
@@ -199,7 +200,7 @@ impl ClientService {
 /// IO interface for the Client handler
 struct ClientIoHandler {
 	client: Arc<Client>,
-	snapshot: Arc<SnapshotService>,
+	snapshot: Arc<SnapshotService<StateDB>>,
 }
 
 const CLIENT_TICK_TIMER: TimerToken = 0;

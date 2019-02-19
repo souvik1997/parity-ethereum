@@ -97,9 +97,9 @@ impl<C, M, U> ParityClient<C, M, U> where
 
 impl<C, M, U, S> Parity for ParityClient<C, M, U> where
 	S: StateInfo + 'static,
-	C: miner::BlockChainClient + BlockChainClient + StateClient<State=S> + Call<State=S> + 'static,
 	M: MinerService<State=S> + 'static,
 	U: UpdateService + 'static,
+	C: miner::BlockChainClient + BlockChainClient + StateClient<State=S> + Call<State=S> + ::ethcore::client::ImportSealedBlock<ImportSealedBlockStateBackend = M::StateBackend> + 'static,
 {
 	type Metadata = Metadata;
 

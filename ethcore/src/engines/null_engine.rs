@@ -20,6 +20,7 @@ use engines::block_reward::{self, RewardKind};
 use header::BlockNumber;
 use machine::WithRewards;
 use parity_machine::{Header, LiveBlock, WithBalances, TotalScoredHeader};
+use state::backend::Backend;
 
 /// Params for a null engine.
 #[derive(Clone, Default)]
@@ -59,8 +60,8 @@ impl<M: Default> Default for NullEngine<M> {
 }
 
 impl<M: WithBalances + WithRewards> Engine<M> for NullEngine<M>
-  where M::ExtendedHeader: TotalScoredHeader,
-        <M::ExtendedHeader as TotalScoredHeader>::Value: Ord
+	where M::ExtendedHeader: TotalScoredHeader, <M::ExtendedHeader as TotalScoredHeader>::Value: Ord, <M as parity_machine::Machine>::StateBackend: Backend + Clone + 'static
+
 {
 	fn name(&self) -> &str {
 		"NullEngine"
@@ -101,7 +102,7 @@ impl<M: WithBalances + WithRewards> Engine<M> for NullEngine<M>
 		Ok(())
 	}
 
-	fn snapshot_components(&self) -> Option<Box<::snapshot::SnapshotComponents>> {
+	fn snapshot_components(&self) -> Option<Box<::snapshot::SnapshotComponents<StateBackend = M::StateBackend>>> {
 		Some(Box::new(::snapshot::PowSnapshot::new(10000, 10000)))
 	}
 

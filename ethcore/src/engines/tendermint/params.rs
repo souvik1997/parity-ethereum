@@ -19,14 +19,15 @@
 use ethjson;
 use std::time::Duration;
 use ethereum_types::U256;
+use state::backend::Backend;
 use super::super::validator_set::{ValidatorSet, new_validator_set};
 use super::super::transition::Timeouts;
 use super::Step;
 
 /// `Tendermint` params.
-pub struct TendermintParams {
+pub struct TendermintParams<B: Backend + Clone> {
 	/// List of validators.
-	pub validators: Box<ValidatorSet>,
+	pub validators: Box<ValidatorSet<MachineStateBackend = B>>,
 	/// Timeout durations for different steps.
 	pub timeouts: TendermintTimeouts,
 	/// Reward per block in base units.
@@ -73,7 +74,7 @@ fn to_duration(ms: ethjson::uint::Uint) -> Duration {
 	Duration::from_millis(ms as u64)
 }
 
-impl From<ethjson::spec::TendermintParams> for TendermintParams {
+impl<B: Backend + Clone + 'static> From<ethjson::spec::TendermintParams> for TendermintParams<B> {
 	fn from(p: ethjson::spec::TendermintParams) -> Self {
 		let dt = TendermintTimeouts::default();
 		TendermintParams {

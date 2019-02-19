@@ -34,6 +34,7 @@ use error::{Error, ErrorKind as SnapshotErrorKind};
 use snapshot::{Error as SnapshotError};
 use hash::keccak;
 use ids::BlockId;
+use state::backend::Backend;
 
 use io::IoChannel;
 
@@ -71,12 +72,12 @@ pub trait DatabaseRestore: Send + Sync {
 }
 
 /// State restoration manager.
-struct Restoration {
+struct Restoration<B: Backend + Clone> {
 	manifest: ManifestData,
 	state_chunks_left: HashSet<H256>,
 	block_chunks_left: HashSet<H256>,
 	state: StateRebuilder,
-	secondary: Box<Rebuilder>,
+	secondary: Box<Rebuilder<EngineStateBackend = B>>,
 	writer: Option<LooseWriter>,
 	snappy_buffer: Bytes,
 	final_state_root: H256,
@@ -84,19 +85,19 @@ struct Restoration {
 	db: Arc<BlockChainDB>,
 }
 
-struct RestorationParams<'a> {
+struct RestorationParams<'a, B: Backend + Clone> {
 	manifest: ManifestData, // manifest to base restoration on.
 	pruning: Algorithm, // pruning algorithm for the database.
 	db: Arc<BlockChainDB>, // database
 	writer: Option<LooseWriter>, // writer for recovered snapshot.
 	genesis: &'a [u8], // genesis block of the chain.
 	guard: Guard, // guard for the restoration directory.
-	engine: &'a EthEngine,
+	engine: &'a EthEngine<B>,
 }
 
-impl Restoration {
+impl<B: Backend + Clone + 'static> Restoration<B> {
 	// make a new restoration using the given parameters.
-	fn new(params: RestorationParams) -> Result<Self, Error> {
+	fn new(params: RestorationParams<B>) -> Result<Self, Error> {
 		let manifest = params.manifest;
 
 		let state_chunks = manifest.state_hashes.iter().cloned().collect();
@@ -149,7 +150,7 @@ impl Restoration {
 	}
 
 	// feeds a block chunk
-	fn feed_blocks(&mut self, hash: H256, chunk: &[u8], engine: &EthEngine, flag: &AtomicBool) -> Result<(), Error> {
+	fn feed_blocks(&mut self, hash: H256, chunk: &[u8], engine: &EthEngine<B>, flag: &AtomicBool) -> Result<(), Error> {
 		if self.block_chunks_left.contains(&hash) {
 			let expected_len = snappy::decompressed_len(chunk)?;
 			if expected_len > MAX_CHUNK_SIZE {
@@ -170,7 +171,7 @@ impl Restoration {
 	}
 
 	// finish up restoration.
-	fn finalize(mut self, engine: &EthEngine) -> Result<(), Error> {
+	fn finalize(mut self, engine: &EthEngine<B>) -> Result<(), Error> {
 		use trie::TrieError;
 
 		if !self.is_done() { return Ok(()) }
@@ -209,9 +210,9 @@ pub type Channel = IoChannel<ClientIoMessage>;
 pub trait SnapshotClient: BlockChainClient + BlockInfo + DatabaseRestore {}
 
 /// Snapshot service parameters.
-pub struct ServiceParams {
+pub struct ServiceParams<B: Backend + Clone> {
 	/// The consensus engine this is built on.
-	pub engine: Arc<EthEngine>,
+	pub engine: Arc<EthEngine<B>>,
 	/// The chain's genesis block.
 	pub genesis_block: Bytes,
 	/// State pruning algorithm.
@@ -224,32 +225,32 @@ pub struct ServiceParams {
 	/// Usually "<chain hash>/snapshot"
 	pub snapshot_root: PathBuf,
 	/// A handle for database restoration.
-	pub client: Arc<SnapshotClient>,
+	pub client: Arc<SnapshotClient<StateBackend = B>>,
 }
 
 /// `SnapshotService` implementation.
 /// This controls taking snapshots and restoring from them.
-pub struct Service {
-	restoration: Mutex<Option<Restoration>>,
+pub struct Service<B: Backend + Clone + 'static> {
+	restoration: Mutex<Option<Restoration<B>>>,
 	restoration_db_handler: Box<BlockChainDBHandler>,
 	snapshot_root: PathBuf,
 	io_channel: Mutex<Channel>,
 	pruning: Algorithm,
 	status: Mutex<RestorationStatus>,
 	reader: RwLock<Option<LooseReader>>,
-	engine: Arc<EthEngine>,
+	engine: Arc<EthEngine<B>>,
 	genesis_block: Bytes,
 	state_chunks: AtomicUsize,
 	block_chunks: AtomicUsize,
-	client: Arc<SnapshotClient>,
+	client: Arc<SnapshotClient<StateBackend = B>>,
 	progress: super::Progress,
 	taking_snapshot: AtomicBool,
 	restoring_snapshot: AtomicBool,
 }
 
-impl Service {
+impl<B: Backend + Clone + 'static> Service<B> {
 	/// Create a new snapshot service from the given parameters.
-	pub fn new(params: ServiceParams) -> Result<Self, Error> {
+	pub fn new(params: ServiceParams<B>) -> Result<Self, Error> {
 		let mut service = Service {
 			restoration: Mutex::new(None),
 			restoration_db_handler: params.restoration_db_handler,
@@ -598,7 +599,7 @@ impl Service {
 	}
 
 	/// Import the previous chunks into the current restoration
-	fn import_prev_chunks(&self, restoration: &mut Option<Restoration>, manifest: ManifestData) -> Result<(), Error> {
+	fn import_prev_chunks(&self, restoration: &mut Option<Restoration<B>>, manifest: ManifestData) -> Result<(), Error> {
 		let prev_chunks = self.prev_chunks_dir();
 
 		// Restore previous snapshot chunks
@@ -628,7 +629,7 @@ impl Service {
 	}
 
 	/// Import a previous chunk at the given path. Returns whether the block was imported or not
-	fn import_prev_chunk(&self, restoration: &mut Option<Restoration>, manifest: &ManifestData, file: io::Result<fs::DirEntry>) -> Result<bool, Error> {
+	fn import_prev_chunk(&self, restoration: &mut Option<Restoration<B>>, manifest: &ManifestData, file: io::Result<fs::DirEntry>) -> Result<bool, Error> {
 		let file = file?;
 		let path = file.path();
 
@@ -656,7 +657,7 @@ impl Service {
 	// finalize the restoration. this accepts an already-locked
 	// restoration as an argument -- so acquiring it again _will_
 	// lead to deadlock.
-	fn finalize_restoration(&self, rest: &mut Option<Restoration>) -> Result<(), Error> {
+	fn finalize_restoration(&self, rest: &mut Option<Restoration<B>>) -> Result<(), Error> {
 		trace!(target: "snapshot", "finalizing restoration");
 
 		let recover = rest.as_ref().map_or(false, |rest| rest.writer.is_some());
@@ -708,7 +709,7 @@ impl Service {
 	}
 
 	/// Feed a chunk with the Restoration
-	fn feed_chunk_with_restoration(&self, restoration: &mut Option<Restoration>, hash: H256, chunk: &[u8], is_state: bool) -> Result<(), Error> {
+	fn feed_chunk_with_restoration(&self, restoration: &mut Option<Restoration<B>>, hash: H256, chunk: &[u8], is_state: bool) -> Result<(), Error> {
 		let (result, db) = {
 			match self.status() {
 				RestorationStatus::Inactive | RestorationStatus::Failed => {
@@ -767,7 +768,7 @@ impl Service {
 	}
 }
 
-impl SnapshotService for Service {
+impl<B: Backend + Clone + 'static> SnapshotService for Service<B> {
 	fn manifest(&self) -> Option<ManifestData> {
 		self.reader.read().as_ref().map(|r| r.manifest().clone())
 	}
@@ -851,7 +852,7 @@ impl SnapshotService for Service {
 	}
 }
 
-impl Drop for Service {
+impl<B: Backend + Clone + 'static> Drop for Service<B> {
 	fn drop(&mut self) {
 		self.abort_restore();
 	}
@@ -862,6 +863,7 @@ mod tests {
 	use client::ClientIoMessage;
 	use io::{IoService};
 	use spec::Spec;
+	use state_db::StateDB;
 	use journaldb::Algorithm;
 	use snapshot::{ManifestData, RestorationStatus, SnapshotService};
 	use super::*;
@@ -873,7 +875,7 @@ mod tests {
 		let gas_prices = vec![1.into(), 2.into(), 3.into(), 999.into()];
 		let client = generate_dummy_client_with_spec_and_data(Spec::new_null, 400, 5, &gas_prices);
 		let service = IoService::<ClientIoMessage>::start().unwrap();
-		let spec = Spec::new_test();
+		let spec = Spec::<StateDB>::new_test();
 
 		let tempdir = TempDir::new("").unwrap();
 		let dir = tempdir.path().join("snapshot");
@@ -914,7 +916,7 @@ mod tests {
 		use ethereum_types::H256;
 		use kvdb_rocksdb::DatabaseConfig;
 
-		let spec = Spec::new_test();
+		let spec = Spec::<StateDB>::new_test();
 		let tempdir = TempDir::new("").unwrap();
 
 		let state_hashes: Vec<_> = (0..5).map(|_| H256::random()).collect();

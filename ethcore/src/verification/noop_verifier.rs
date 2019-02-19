@@ -16,22 +16,30 @@
 
 //! No-op verifier.
 
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 use client::{BlockInfo, CallContract};
 use engines::EthEngine;
 use error::Error;
 use header::Header;
+use state::backend::Backend;
 use super::{verification, Verifier};
 
 /// A no-op verifier -- this will verify everything it's given immediately.
 #[allow(dead_code)]
-pub struct NoopVerifier;
+pub struct NoopVerifier<B> { _phantom: SafePhantomData<B> }
 
-impl<C: BlockInfo + CallContract> Verifier<C> for NoopVerifier {
+impl<B> NoopVerifier<B> {
+	pub fn new() -> Self { Self { _phantom: PhantomData } }
+}
+
+impl<C: BlockInfo + CallContract, B: Backend + Clone> Verifier<C> for NoopVerifier<B> {
+	type EngineStateBackend = B;
 	fn verify_block_family(
 		&self,
 		_: &Header,
 		_t: &Header,
-		_: &EthEngine,
+		_: &EthEngine<B>,
 		_: Option<verification::FullFamilyParams<C>>
 	) -> Result<(), Error> {
 		Ok(())
@@ -41,7 +49,7 @@ impl<C: BlockInfo + CallContract> Verifier<C> for NoopVerifier {
 		Ok(())
 	}
 
-	fn verify_block_external(&self, _header: &Header, _engine: &EthEngine) -> Result<(), Error> {
+	fn verify_block_external(&self, _header: &Header, _engine: &EthEngine<B>) -> Result<(), Error> {
 		Ok(())
 	}
 }
