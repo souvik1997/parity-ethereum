@@ -146,9 +146,266 @@ impl SleepState {
 	}
 }
 
+pub struct Client {
+
+	core: CoreClient,
+
+	/// Database pruning strategy to use for StateDB
+	pruning: journaldb::Algorithm,
+
+	state_db: RwLock<StateDB>,
+}
+
+impl Client {
+	pub fn new(
+		config: ClientConfig,
+		spec: &Spec<B>,
+		db: Arc<BlockChainDB>,
+		miner: Arc<Miner<B>>,
+		message_channel: IoChannel<ClientIoMessage>
+	) -> Self {
+
+
+		let journal_db = journaldb::new(db.key_value().clone(), config.pruning, ::db::COL_STATE);
+		let mut state_db = StateDB::new(journal_db, config.state_cache_size);
+		if state_db.journal_db().is_empty() {
+			// Sets the correct state root.
+			state_db = spec.ensure_db_good(state_db, &factories)?;
+			let mut batch = DBTransaction::new();
+			state_db.journal_under(&mut batch, 0, &spec.genesis_header().hash())?;
+			db.key_value().write(batch)?;
+		}
+
+		trace!("Cleanup journal: DB Earliest = {:?}, Latest = {:?}", state_db.journal_db().earliest_era(), state_db.journal_db().latest_era());
+
+		let pruning = config.pruning.clone(),
+
+		let client = Self {
+			core: CoreClient::new(config, spec, db, miner, message_channel),
+			pruning: pruning,
+			state_db: RwLock::new(state_db),
+		};
+
+		// prune old states.
+		{
+			let state_db = client.state_db.read().boxed_clone();
+			let chain = client.core.chain.read();
+			client.prune_ancient(state_db, &chain)?;
+		}
+
+
+
+		// ensure genesis epoch proof in the DB.
+		{
+			let chain = client.core.chain.read();
+			let gh = spec.genesis_header();
+			if chain.epoch_transition(0, gh.hash()).is_none() {
+				trace!(target: "client", "No genesis transition found.");
+
+				let proof = client.with_proving_caller(
+					BlockId::Number(0),
+					|call| client.core.engine.genesis_epoch_data(&gh, call)
+				);
+				let proof = match proof {
+					Ok(proof) => proof,
+					Err(e) => {
+						warn!(target: "client", "Error generating genesis epoch data: {}. Snapshots generated may not be complete.", e);
+						Vec::new()
+					}
+				};
+
+				debug!(target: "client", "Obtained genesis transition proof: {:?}", proof);
+
+				let mut batch = DBTransaction::new();
+				chain.insert_epoch_transition(&mut batch, 0, EpochTransition {
+					block_hash: gh.hash(),
+					block_number: 0,
+					proof: proof,
+				});
+
+				client.core.db.read().key_value().write_buffered(batch);
+			}
+		}
+
+		// ensure buffered changes are flushed.
+		client.core.db.read().key_value().flush()?;
+	}
+
+	pub fn keep_alive(&self) {
+		self.core.keep_alive()
+	}
+
+	pub fn add_notify(&self, target: Arc<ChainNotify>) {
+		self.core.add_notify(target)
+	}
+
+	pub fn set_exit_handler<F>(&self, f: F) where F: Fn(String) + 'static + Send {
+		self.core.set_exit_handler(f)
+	}
+
+	pub fn engine(&self) -> &EthEngine<StateDB> {
+		self.core.engine()
+	}
+
+	pub fn on_user_defaults_change<F>(&self, f: F) where F: 'static + FnMut(Option<Mode>) + Send {
+		self.core.on_user_defaults_change(f)
+	}
+
+	pub fn flush_queue(&self) {
+		self.core.flush_queue()
+	}
+
+	pub fn latest_env_info(&self) -> EnvInfo {
+		self.core.latest_env_info()
+	}
+
+	pub fn env_info(&self, id: BlockId) -> Option<EnvInfo> {
+		self.core.env_info(id)
+	}
+
+	#[cfg(test)]
+	pub fn miner(&self) -> Arc<Miner<StateDB>> {
+		self.core.miner()
+	}
+
+
+	#[cfg(test)]
+	pub fn state_db(&self) -> ::parking_lot::RwLockReadGuard<StateDB> {
+		self.state_db.read()
+	}
+
+	#[cfg(test)]
+	pub fn chain(&self) -> Arc<BlockChain> {
+		self.core.chain()
+	}
+
+	pub fn set_io_channel(&self, io_channel: IoChannel<ClientIoMessage>) {
+		self.core.set_io_channel(io_channel)
+	}
+
+	pub fn state_at_beginning(&self, id: BlockId) {
+		self.core.state_at_beginning(id, self)
+	}
+
+	pub fn state(&self) -> Box<StateInfo> {
+		self.core.state(self)
+	}
+
+	pub fn blockchain_cache_info(&self) -> BlockChainCacheSize {
+		self.core.blockchain_cache_info()
+	}
+
+	pub fn report(&self) -> ClientReport {
+		self.core.report(self)
+	}
+
+	pub fn tick(&self, prevent_sleep: bool) {
+		self.core.tick(prevent_sleep)
+	}
+
+}
+
+trait RealClient {
+	type RealClientStateBackend;
+
+	/// Attempt to get a copy of a specific block's final state.
+	///
+	/// This will not fail if given BlockId::Latest.
+	/// Otherwise, this can fail (but may not) if the DB prunes state or the block
+	/// is unknown.
+	fn state_at(&self, id: BlockId) -> Option<State<Self::RealClientStateBackend>>;
+
+	/// Get a copy of the best block's state.
+	fn latest_state(&self) -> State<StateDB>;
+
+
+
+}
+
+impl RealClient for Client {
+	type RealClientStateBackend = StateDB;
+
+	/// Take a snapshot at the given block.
+	/// If the ID given is "latest", this will default to 1000 blocks behind.
+	fn take_snapshot<W: snapshot_io::SnapshotWriter + Send>(&self, writer: W, at: BlockId, p: &snapshot::Progress) -> esult<(), EthcoreError> {
+		let db = self.state_db.read().journal_db().boxed_clone();
+		let best_block_number = self.chain_info().best_block_number;
+		let block_number = self.block_number(at).ok_or(snapshot::Error::InvalidStartingBlock(at))?;
+
+		if db.is_pruned() && self.pruning_info().earliest_state > block_number {
+			return Err(snapshot::Error::OldBlockPrunedDB.into());
+		}
+
+		let history = ::std::cmp::min(self.history, 1000);
+
+		let start_hash = match at {
+			BlockId::Latest => {
+				let start_num = match db.earliest_era() {
+					Some(era) => ::std::cmp::max(era, best_block_number.saturating_sub(history)),
+					None => best_block_number.saturating_sub(history),
+				};
+
+				match self.block_hash(BlockId::Number(start_num)) {
+					Some(h) => h,
+					None => return Err(snapshot::Error::InvalidStartingBlock(at).into()),
+				}
+			}
+			_ => match self.block_hash(at) {
+				Some(hash) => hash,
+				None => return Err(snapshot::Error::InvalidStartingBlock(at).into()),
+			},
+		};
+
+		let processing_threads = self.config.snapshot.processing_threads;
+		snapshot::take_snapshot(&*self.engine, &self.chain.read(), start_hash, db.as_hashdb(), writer, p, processing_threads)?;
+
+		Ok(())
+	}
+
+	fn state_at(&self, id: BlockId) -> Option<State<StateDB>> {
+		// fast path for latest state.
+		match id.clone() {
+			BlockId::Latest => return Some(self.latest_state()),
+			_ => {},
+		}
+
+		let block_number = match self.block_number(id) {
+			Some(num) => num,
+			None => return None,
+		};
+
+		self.block_header(id).and_then(|header| {
+			let db = self.state_db.read().boxed_clone();
+
+			// early exit for pruned blocks
+			if db.is_pruned() && self.pruning_info().earliest_state > block_number {
+				return None;
+			}
+
+			let root = header.state_root();
+			State::from_existing(db, root, self.engine.account_start_nonce(block_number), self.factories.clone()).ok()
+		})
+	}
+
+	fn latest_state(&self) -> State<StateDB> {
+		let header = self.best_block_header();
+		State::from_existing(
+			self.state_db.read().boxed_clone_canon(&header.hash()),
+			*header.state_root(),
+			self.engine.account_start_nonce(header.number()),
+			self.factories.clone()
+		)
+			.expect("State root of best block header always valid.")
+	}
+
+	fn state_memory_used(&self) -> usize {
+		self.state_db.read().mem_used()
+	}
+}
+
 /// Blockchain database client backed by a persistent database. Owns and manages a blockchain and a block queue.
 /// Call `import_block()` to import a block asynchronously; `flush_queue()` flushes the queue.
-pub struct Client {
+pub struct CoreClient<B: Backend + Clone> {
 	/// Flag used to disable the client forever. Not to be confused with `liveness`.
 	///
 	/// For example, auto-updater will disable client forever if there is a
@@ -162,18 +419,15 @@ pub struct Client {
 
 	chain: RwLock<Arc<BlockChain>>,
 	tracedb: RwLock<TraceDB<BlockChain>>,
-	engine: Arc<EthEngine<StateDB>>,
+	engine: Arc<EthEngine<B>>,
 
 	/// Client configuration
 	config: ClientConfig,
 
-	/// Database pruning strategy to use for StateDB
-	pruning: journaldb::Algorithm,
-
 	/// Client uses this to store blocks, traces, etc.
 	db: RwLock<Arc<BlockChainDB>>,
 
-	state_db: RwLock<StateDB>,
+
 
 	/// Report on the status of client
 	report: RwLock<ClientReport>,
@@ -218,31 +472,31 @@ pub struct Client {
 	import_lock: Mutex<()>, // FIXME Maybe wrap the whole `Importer` instead?
 
 	/// Used to verify blocks
-	verifier: Box<Verifier<Client, EngineStateBackend=StateDB>>,
+	verifier: Box<Verifier<CoreClient, EngineStateBackend = B>>,
 
 	/// Queue containing pending blocks
-	block_queue: BlockQueue<StateDB>,
+	block_queue: BlockQueue<B>,
 
 	/// Ancient block verifier: import an ancient sequence of blocks in order from a starting epoch
-	ancient_verifier: AncientVerifier<StateDB>,
+	ancient_verifier: AncientVerifier<B>,
 
 	/// A lru cache of recently detected bad blocks
 	bad_blocks: bad_blocks::BadBlocks,
 
 	/// Miner instance
-	miner: Arc<Miner<StateDB>>,
+	miner: Arc<Miner<B>>,
 }
 
-impl Client {
+impl<B: Backend + Clone> CoreClient<B> {
 	/// Create a new client with given parameters.
 	/// The database is assumed to have been initialized with the correct columns.
 	pub fn new(
 		config: ClientConfig,
-		spec: &Spec<StateDB>,
+		spec: &Spec<B>,
 		db: Arc<BlockChainDB>,
-		miner: Arc<Miner<StateDB>>,
-		message_channel: IoChannel<ClientIoMessage>,
-	) -> Result<Arc<Client>, ::error::Error> {
+		miner: Arc<Miner<B>>,
+		message_channel: IoChannel<ClientIoMessage>
+	) -> Self {
 		let trie_spec = match config.fat_db {
 			true => TrieSpec::Fat,
 			false => TrieSpec::Secure,
@@ -255,21 +509,9 @@ impl Client {
 			accountdb: Default::default(),
 		};
 
-		let journal_db = journaldb::new(db.key_value().clone(), config.pruning, ::db::COL_STATE);
-		let mut state_db = StateDB::new(journal_db, config.state_cache_size);
-		if state_db.journal_db().is_empty() {
-			// Sets the correct state root.
-			state_db = spec.ensure_db_good(state_db, &factories)?;
-			let mut batch = DBTransaction::new();
-			state_db.journal_under(&mut batch, 0, &spec.genesis_header().hash())?;
-			db.key_value().write(batch)?;
-		}
-
 		let gb = spec.genesis_block();
 		let chain = Arc::new(BlockChain::new(config.blockchain.clone(), &gb, db.clone()));
 		let tracedb = RwLock::new(TraceDB::new(config.tracing.clone(), db.clone(), chain.clone()));
-
-		trace!("Cleanup journal: DB Earliest = {:?}, Latest = {:?}", state_db.journal_db().earliest_era(), state_db.journal_db().latest_era());
 
 		let history = if config.history < MIN_HISTORY_SIZE {
 			info!(target: "client", "Ignoring pruning history parameter of {}\
@@ -296,7 +538,7 @@ impl Client {
 		}
 
 		let verifier_type = config.verifier_type.clone();
-		let client = Arc::new(Client {
+		let core = Self {
 			enabled: AtomicBool::new(true),
 			sleep_state: Mutex::new(SleepState::new(awake)),
 			liveness: AtomicBool::new(awake),
@@ -304,9 +546,7 @@ impl Client {
 			chain: RwLock::new(chain),
 			tracedb: tracedb,
 			engine: engine.clone(),
-			pruning: config.pruning.clone(),
 			db: RwLock::new(db.clone()),
-			state_db: RwLock::new(state_db),
 			report: RwLock::new(Default::default()),
 			io_channel: RwLock::new(message_channel),
 			notify: RwLock::new(Vec::new()),
@@ -328,50 +568,8 @@ impl Client {
 			ancient_verifier: AncientVerifier::new(engine),
 			bad_blocks: Default::default(),
 			miner,
-		});
-
-		// prune old states.
-		{
-			let state_db = client.state_db.read().boxed_clone();
-			let chain = client.chain.read();
-			client.prune_ancient(state_db, &chain)?;
-		}
-
-		// ensure genesis epoch proof in the DB.
-		{
-			let chain = client.chain.read();
-			let gh = spec.genesis_header();
-			if chain.epoch_transition(0, gh.hash()).is_none() {
-				trace!(target: "client", "No genesis transition found.");
-
-				let proof = client.with_proving_caller(
-					BlockId::Number(0),
-					|call| client.engine.genesis_epoch_data(&gh, call)
-				);
-				let proof = match proof {
-					Ok(proof) => proof,
-					Err(e) => {
-						warn!(target: "client", "Error generating genesis epoch data: {}. Snapshots generated may not be complete.", e);
-						Vec::new()
-					}
-				};
-
-				debug!(target: "client", "Obtained genesis transition proof: {:?}", proof);
-
-				let mut batch = DBTransaction::new();
-				chain.insert_epoch_transition(&mut batch, 0, EpochTransition {
-					block_hash: gh.hash(),
-					block_number: 0,
-					proof: proof,
-				});
-
-				client.db.read().key_value().write_buffered(batch);
-			}
-		}
-
-		// ensure buffered changes are flushed.
-		client.db.read().key_value().flush()?;
-		Ok(client)
+		};
+		core
 	}
 
 	/// Wakes up client if it's a sleep.
@@ -400,7 +598,7 @@ impl Client {
 	}
 
 	/// Returns engine reference.
-	pub fn engine(&self) -> &EthEngine<StateDB> {
+	pub fn engine(&self) -> &EthEngine<B> {
 		&*self.engine
 	}
 
@@ -535,13 +733,8 @@ impl Client {
 
 	/// Get shared miner reference.
 	#[cfg(test)]
-	pub fn miner(&self) -> Arc<Miner<StateDB>> {
+	pub fn miner(&self) -> Arc<Miner<B>> {
 		self.miner.clone()
-	}
-
-	#[cfg(test)]
-	pub fn state_db(&self) -> ::parking_lot::RwLockReadGuard<StateDB> {
-		self.state_db.read()
 	}
 
 	#[cfg(test)]
@@ -554,63 +747,21 @@ impl Client {
 		*self.io_channel.write() = io_channel;
 	}
 
-	/// Get a copy of the best block's state.
-	pub fn latest_state(&self) -> State<StateDB> {
-		let header = self.best_block_header();
-		State::from_existing(
-			self.state_db.read().boxed_clone_canon(&header.hash()),
-			*header.state_root(),
-			self.engine.account_start_nonce(header.number()),
-			self.factories.clone()
-		)
-		.expect("State root of best block header always valid.")
-	}
-
-	/// Attempt to get a copy of a specific block's final state.
-	///
-	/// This will not fail if given BlockId::Latest.
-	/// Otherwise, this can fail (but may not) if the DB prunes state or the block
-	/// is unknown.
-	pub fn state_at(&self, id: BlockId) -> Option<State<StateDB>> {
-		// fast path for latest state.
-		match id.clone() {
-			BlockId::Latest => return Some(self.latest_state()),
-			_ => {},
-		}
-
-		let block_number = match self.block_number(id) {
-			Some(num) => num,
-			None => return None,
-		};
-
-		self.block_header(id).and_then(|header| {
-			let db = self.state_db.read().boxed_clone();
-
-			// early exit for pruned blocks
-			if db.is_pruned() && self.pruning_info().earliest_state > block_number {
-				return None;
-			}
-
-			let root = header.state_root();
-			State::from_existing(db, root, self.engine.account_start_nonce(block_number), self.factories.clone()).ok()
-		})
-	}
-
 	/// Attempt to get a copy of a specific block's beginning state.
 	///
 	/// This will not fail if given BlockId::Latest.
 	/// Otherwise, this can fail (but may not) if the DB prunes state.
-	pub fn state_at_beginning(&self, id: BlockId) -> Option<State<StateDB>> {
+	pub fn state_at_beginning<C: RealClient>(&self, id: BlockId, client: &C) -> Option<State<StateDB>> {
 		match self.block_number(id) {
 			None => None,
-			Some(0) => self.state_at(id),
-			Some(n) => self.state_at(BlockId::Number(n - 1)),
+			Some(0) => client.state_at(id),
+			Some(n) => client.state_at(BlockId::Number(n - 1)),
 		}
 	}
 
 	/// Get a copy of the best block's state.
-	pub fn state(&self) -> Box<StateInfo> {
-		Box::new(self.latest_state()) as Box<_>
+	pub fn state<C: RealClient>(&self, client: &C) -> Box<StateInfo> {
+		Box::new(client.latest_state()) as Box<_>
 	}
 
 	/// Get info on the cache.
@@ -619,9 +770,9 @@ impl Client {
 	}
 
 	/// Get the report.
-	pub fn report(&self) -> ClientReport {
+	pub fn report<C: RealClient>(&self, client: &C) -> ClientReport {
 		let mut report = self.report.read().clone();
-		report.state_db_mem = self.state_db.read().mem_used();
+		report.state_db_mem = client.state_memory_used();
 		report
 	}
 
@@ -672,43 +823,6 @@ impl Client {
 			}
 			_ => {}
 		}
-	}
-
-	/// Take a snapshot at the given block.
-	/// If the ID given is "latest", this will default to 1000 blocks behind.
-	pub fn take_snapshot<W: snapshot_io::SnapshotWriter + Send>(&self, writer: W, at: BlockId, p: &snapshot::Progress) -> Result<(), EthcoreError> {
-		let db = self.state_db.read().journal_db().boxed_clone();
-		let best_block_number = self.chain_info().best_block_number;
-		let block_number = self.block_number(at).ok_or(snapshot::Error::InvalidStartingBlock(at))?;
-
-		if db.is_pruned() && self.pruning_info().earliest_state > block_number {
-			return Err(snapshot::Error::OldBlockPrunedDB.into());
-		}
-
-		let history = ::std::cmp::min(self.history, 1000);
-
-		let start_hash = match at {
-			BlockId::Latest => {
-				let start_num = match db.earliest_era() {
-					Some(era) => ::std::cmp::max(era, best_block_number.saturating_sub(history)),
-					None => best_block_number.saturating_sub(history),
-				};
-
-				match self.block_hash(BlockId::Number(start_num)) {
-					Some(h) => h,
-					None => return Err(snapshot::Error::InvalidStartingBlock(at).into()),
-				}
-			}
-			_ => match self.block_hash(at) {
-				Some(hash) => hash,
-				None => return Err(snapshot::Error::InvalidStartingBlock(at).into()),
-			},
-		};
-
-		let processing_threads = self.config.snapshot.processing_threads;
-		snapshot::take_snapshot(&*self.engine, &self.chain.read(), start_hash, db.as_hashdb(), writer, p, processing_threads)?;
-
-		Ok(())
 	}
 
 	/// Ask the client what the history parameter is.
@@ -1290,6 +1404,18 @@ impl Client {
 			self.db.read().key_value().write(batch).expect("DB flush failed");
 		}
 	}
+
+	fn call_contract<C: RealClient>(&self, block_id: BlockId, address: Address, data: Bytes, client: &C) -> Result<Bytes, String> {
+		let state_pruned = || CallError::StatePruned.to_string();
+		let state = &mut client.state_at(block_id).ok_or_else(&state_pruned)?;
+		let header = self.block_header_decoded(block_id).ok_or_else(&state_pruned)?;
+
+		let transaction = self.contract_call_tx(block_id, address, data);
+
+		self.call(&transaction, Default::default(), state, &header)
+			.map_err(|e| format!("{:?}", e))
+			.map(|executed| executed.output)
+	}
 }
 
 impl snapshot::DatabaseRestore for Client {
@@ -1385,17 +1511,7 @@ impl RegistryInfo for Client {
 }
 
 impl CallContract for Client {
-	fn call_contract(&self, block_id: BlockId, address: Address, data: Bytes) -> Result<Bytes, String> {
-		let state_pruned = || CallError::StatePruned.to_string();
-		let state = &mut self.state_at(block_id).ok_or_else(&state_pruned)?;
-		let header = self.block_header_decoded(block_id).ok_or_else(&state_pruned)?;
 
-		let transaction = self.contract_call_tx(block_id, address, data);
-
-		self.call(&transaction, Default::default(), state, &header)
-			.map_err(|e| format!("{:?}", e))
-			.map(|executed| executed.output)
-	}
 }
 
 impl ImportBlock for Client {
