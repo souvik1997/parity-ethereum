@@ -174,12 +174,12 @@ impl<'a> BlockView<'a> {
 		self.uncles_rlp().iter().nth(index).map(|rlp| rlp.as_raw().to_vec())
 	}
 
-	pub fn proof_rlp(&self) -> ViewRlp<'a> {
-		self.rlp.at(3)
+	pub fn proof_rlp(&self) -> Option<ViewRlp<'a>> {
+		self.rlp.maybe_at(3)
 	}
 
-	pub fn proof(&self) -> Proof {
-		self.rlp.val_at(3)
+	pub fn proof(&self) -> Option<Proof> {
+		self.rlp.rlp.val_at(3).ok()
 	}
 }
 

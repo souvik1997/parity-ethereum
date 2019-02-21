@@ -58,8 +58,8 @@ pub struct SyncBody {
 	pub transactions: Vec<UnverifiedTransaction>,
 	pub uncles_bytes: Bytes,
 	pub uncles: Vec<BlockHeader>,
-	pub proof_bytes: Bytes,
-	pub proof: Proof,
+	pub proof_bytes: Option<Bytes>,
+	pub proof: Option<Proof>,
 }
 
 impl SyncBody {
@@ -67,15 +67,15 @@ impl SyncBody {
 		let rlp = Rlp::new(bytes);
 		let transactions_rlp = rlp.at(0)?;
 		let uncles_rlp = rlp.at(1)?;
-		let proof_rlp = rlp.at(2)?;
+		let proof_rlp = rlp.at(2).ok();
 
 		let result = SyncBody {
 			transactions_bytes: transactions_rlp.as_raw().to_vec(),
 			transactions: transactions_rlp.as_list()?,
 			uncles_bytes: uncles_rlp.as_raw().to_vec(),
 			uncles: uncles_rlp.as_list()?,
-			proof_bytes: proof_rlp.as_raw().to_vec(),
-			proof: proof_rlp.as_val()?,
+			proof_bytes: proof_rlp.as_ref().map(|v| v.as_raw().to_vec()),
+			proof: proof_rlp.and_then(|v| v.as_val().ok()),
 		};
 
 		Ok(result)
@@ -87,8 +87,8 @@ impl SyncBody {
 			transactions: Vec::with_capacity(0),
 			uncles_bytes: ::rlp::EMPTY_LIST_RLP.to_vec(),
 			uncles: Vec::with_capacity(0),
-			proof_bytes: ::rlp::EMPTY_LIST_RLP.to_vec(),
-			proof: Proof::default(),
+			proof_bytes: None,
+			proof: None,
 		}
 	}
 }
@@ -117,12 +117,16 @@ impl HeapSizeOf for SyncBlock {
 }
 
 fn unverified_from_sync(header: SyncHeader, body: Option<SyncBody>) -> Unverified {
-	let mut stream = RlpStream::new_list(3);
-	stream.append_raw(&header.bytes, 1);
 	let body = body.unwrap_or_else(SyncBody::empty_body);
+	let list_length = 3 + match body.proof_bytes { Some(_) => 1, None => 0 };
+	let mut stream = RlpStream::new_list(list_length);
+	stream.append_raw(&header.bytes, 1);
 	stream.append_raw(&body.transactions_bytes, 1);
 	stream.append_raw(&body.uncles_bytes, 1);
-	stream.append_raw(&body.proof_bytes, 1);
+	match body.proof_bytes {
+		Some(ref proof) => { stream.append_raw(proof, 1); }
+		None => {}
+	};
 
 	Unverified {
 		header: header.header,

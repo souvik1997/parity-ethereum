@@ -1514,11 +1514,16 @@ impl BlockChain {
 
 	/// Create a block body from a block.
 	pub fn block_to_body(block: &[u8]) -> Bytes {
-		let mut body = RlpStream::new_list(2);
 		let block_view = view!(BlockView, block);
+		let proof_rlp = block_view.proof_rlp();
+		let list_length = 2 + match proof_rlp { Some(_) => 1, None => 0 };
+		let mut body = RlpStream::new_list(list_length);
 		body.append_raw(block_view.transactions_rlp().as_raw(), 1);
 		body.append_raw(block_view.uncles_rlp().as_raw(), 1);
-		body.append_raw(block_view.proof_rlp().as_raw(), 1);
+		match proof_rlp {
+			Some(proof_rlp) => { body.append_raw(proof_rlp.as_raw(), 1); }
+			None => {}
+		};
 		body.out()
 	}
 

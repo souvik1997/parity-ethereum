@@ -176,9 +176,9 @@ impl Body {
 	/// Hash of each uncle.
 	pub fn uncle_hashes(&self) -> Vec<H256> { self.view().uncle_hashes() }
 
-	pub fn proof_rlp(&self) -> Rlp { self.view().proof_rlp().rlp }
+	pub fn proof_rlp(&self) -> Option<Rlp> { self.view().proof_rlp().map(|r| r.rlp) }
 
-	pub fn proof(&self) -> Proof { self.view().proof() }
+	pub fn proof(&self) -> Option<Proof> { self.view().proof() }
 }
 
 /// Owning block view.
@@ -195,12 +195,16 @@ impl Block {
 
 	/// Create a new owning block view by concatenating the encoded header and body
 	pub fn new_from_header_and_body(header: &views::HeaderView, body: &views::BodyView) -> Self {
-		let mut stream = RlpStream::new_list(3);
+		let proof_rlp = body.proof_rlp();
+		let list_length = 3 + match proof_rlp { Some(_) => 1, None => 0 };
+		let mut stream = RlpStream::new_list(list_length);
 		stream.append_raw(header.rlp().as_raw(), 1);
 		stream.append_raw(body.transactions_rlp().as_raw(), 1);
 		stream.append_raw(body.uncles_rlp().as_raw(), 1);
-		stream.append_raw(body.proof_rlp().as_raw(), 1);
-
+		match proof_rlp {
+			Some(proof_rlp) => { stream.append_raw(proof_rlp.as_raw(), 1); }
+			None => {}
+		};
 		Block::new(stream.out())
 	}
 

@@ -632,7 +632,7 @@ impl BadBlocks for TestBlockChainClient {
 				header: Default::default(),
 				transactions: vec![],
 				uncles: vec![],
-				proof: Proof::default(),
+				proof: None,
 				bytes: vec![1, 2, 3],
 			}, "Invalid block".into())
 		]

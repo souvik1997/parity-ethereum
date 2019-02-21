@@ -46,7 +46,7 @@ impl<'a, 'view> ViewRlp<'a> where 'a : 'view {
 		}
 	}
 
-	fn maybe_at(&self, index: usize) -> Option<ViewRlp<'a>> {
+	pub fn maybe_at(&self, index: usize) -> Option<ViewRlp<'a>> {
 		self.rlp.at(index)
 			.map(|rlp| self.new_from_rlp(rlp))
 			.ok()

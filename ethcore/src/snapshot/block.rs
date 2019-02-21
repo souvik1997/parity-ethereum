@@ -24,11 +24,10 @@ use rlp::{DecoderError, RlpStream, Rlp};
 use ethereum_types::H256;
 use bytes::Bytes;
 use triehash::ordered_trie_root;
-use state::backend::Proof;
+
 
 const HEADER_FIELDS: usize = 8;
 const BLOCK_FIELDS: usize = 2;
-const PROOF_FIELDS: usize = 1;
 
 pub struct AbridgedBlock {
 	rlp: Bytes,
@@ -57,8 +56,7 @@ impl AbridgedBlock {
 		let mut stream = RlpStream::new_list(
 			HEADER_FIELDS +
 			seal_fields.len() +
-			BLOCK_FIELDS +
-			PROOF_FIELDS
+			BLOCK_FIELDS
 		);
 
 		// write header values.
@@ -76,8 +74,6 @@ impl AbridgedBlock {
 		stream
 			.append_list(&block_view.transactions())
 			.append_list(&block_view.uncles());
-
-		stream.append(&block_view.proof());
 
 		// write seal fields.
 		for field in seal_fields {
@@ -109,7 +105,6 @@ impl AbridgedBlock {
 
 		let transactions = rlp.list_at(8)?;
 		let uncles: Vec<Header> = rlp.list_at(9)?;
-		let proof: Proof = rlp.val_at(10)?;
 
 		header.set_transactions_root(ordered_trie_root(
 			rlp.at(8)?.iter().map(|r| r.as_raw())
@@ -121,7 +116,7 @@ impl AbridgedBlock {
 		header.set_uncles_hash(keccak(uncles_rlp.as_raw()));
 
 		let mut seal_fields = Vec::new();
-		for i in (HEADER_FIELDS + BLOCK_FIELDS + PROOF_FIELDS)..rlp.item_count()? {
+		for i in (HEADER_FIELDS + BLOCK_FIELDS)..rlp.item_count()? {
 			let seal_rlp = rlp.at(i)?;
 			seal_fields.push(seal_rlp.as_raw().to_owned());
 		}
@@ -132,7 +127,7 @@ impl AbridgedBlock {
 			header: header,
 			transactions: transactions,
 			uncles: uncles,
-			proof: proof
+			proof: None
 		})
 	}
 }

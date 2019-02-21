@@ -125,7 +125,7 @@ pub mod blocks {
 		/// Unverified block uncles.
 		pub uncles: Vec<Header>,
 		/// Proof
-		pub proof: Proof,
+		pub proof: Option<Proof>,
 		/// Raw block bytes.
 		pub bytes: Bytes,
 	}
@@ -139,7 +139,7 @@ pub mod blocks {
 				let header = rlp.val_at(0)?;
 				let transactions = rlp.list_at(1)?;
 				let uncles = rlp.list_at(2)?;
-				let proof = rlp.val_at(3)?;
+				let proof = rlp.val_at(3).ok();
 				(header, transactions, uncles, proof)
 			};
 

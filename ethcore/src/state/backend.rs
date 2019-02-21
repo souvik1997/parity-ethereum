@@ -70,12 +70,9 @@ impl Proof {
 
 impl rlp::Decodable for ProofElement {
 	fn decode(d: &Rlp) -> Result<Self, DecoderError> {
-		println!("decoding ProofElement: size: {:?}, items: {:?}", d.size(), d.item_count());
 		Ok(ProofElement::new(DBValue::from_vec(d.as_list()?)))
 	}
 }
-
-
 
 impl rlp::Encodable for ProofElement {
 	fn rlp_append(&self, s: &mut RlpStream) {

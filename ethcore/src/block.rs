@@ -62,7 +62,7 @@ pub struct Block {
 	/// The uncles of this block.
 	pub uncles: Vec<Header>,
 	/// Proof of transactions
-	pub proof: Proof,
+	pub proof: Option<Proof>,
 }
 
 impl Block {
@@ -90,7 +90,7 @@ impl Decodable for Block {
 			header: rlp.val_at(0)?,
 			transactions: rlp.list_at(1)?,
 			uncles: rlp.list_at(2)?,
-			proof: rlp.val_at(3)?,
+			proof: rlp.val_at(3).ok(),
 		})
 	}
 }
@@ -174,7 +174,7 @@ pub trait IsBlock {
 			header: self.header().clone(),
 			transactions: self.transactions().iter().cloned().map(Into::into).collect(),
 			uncles: self.uncles().to_vec(),
-			proof: self.proof()
+			proof: Some(self.proof())
 		}
 	}
 
