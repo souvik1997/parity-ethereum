@@ -146,9 +146,131 @@ impl SleepState {
 	}
 }
 
+pub trait ClientBackend : Backend + Clone + 'static {
+	fn create(db: &Arc<BlockChainDB>, check: Option<(&Spec<Self>, &Factories)>, pruning: journaldb::Algorithm, cache_size: usize) -> Result<Self, ::error::Error>;
+	fn sanity_check(&self, chain: &Arc<BlockChain>);
+	fn pruning_info(&self, chain: &Arc<BlockChain>) -> PruningInfo;
+	fn state_at_hash(&self, hash: &H256) -> Option<Self>;
+	fn state_at_proof(&self, proof: &Proof) -> Option<Self>;
+	fn sync_cache(&mut self, enacted: &[H256], retracted: &[H256], is_best: bool);
+	fn state_data(&self, hash: &H256) -> Option<Bytes>;
+	fn prune_ancient(&mut self, chain: &BlockChain, history: u64, history_mem: usize, on_prune: &mut FnMut(DBTransaction)) -> Result<(), ::error::Error>;
+	fn cache_size(&self) -> usize;
+	fn is_pruned(&self) -> bool;
+	fn earliest_era(&self) -> Option<u64>;
+	fn journal_under(&mut self, batch: &mut DBTransaction, now: u64, id: &H256) -> ::std::io::Result<u32>;
+	fn mem_used(&self) -> usize;
+}
+
+impl ClientBackend for StateDB {
+	fn create(db: &Arc<BlockChainDB>, check: Option<(&Spec<Self>, &Factories)>, pruning: journaldb::Algorithm, cache_size: usize) -> Result<Self, ::error::Error> {
+		let journal_db = journaldb::new(db.key_value().clone(), pruning, ::db::COL_STATE);
+		let mut state_db = StateDB::new(journal_db, cache_size);
+		match check {
+			Some((spec, factories)) => {
+				if state_db.journal_db().is_empty() {
+					// Sets the correct state root.
+					state_db = spec.ensure_db_good(state_db, factories)?;
+					let mut batch = DBTransaction::new();
+					state_db.journal_under(&mut batch, 0, &spec.genesis_header().hash())?;
+					db.key_value().write(batch)?;
+				}
+			}
+			None => {}
+		}
+		trace!("Cleanup journal: DB Earliest = {:?}, Latest = {:?}", state_db.journal_db().earliest_era(), state_db.journal_db().latest_era());
+		Ok(state_db)
+	}
+
+	fn sanity_check(&self, chain: &Arc<BlockChain>) {
+		if !chain.block_header_data(&chain.best_block_hash()).map_or(true, |h| self.journal_db().contains(&h.state_root())) {
+			warn!("State root not found for block #{} ({:x})", chain.best_block_number(), chain.best_block_hash());
+		}
+	}
+
+	fn pruning_info(&self, chain: &Arc<BlockChain>) -> PruningInfo {
+		PruningInfo {
+			earliest_chain: chain.first_block_number().unwrap_or(1),
+			earliest_state: self.journal_db().earliest_era().unwrap_or(0),
+		}
+	}
+
+	fn state_at_proof(&self, proof: &Proof) -> Option<Self> {
+		None
+	}
+
+	fn state_at_hash(&self, hash: &H256) -> Option<Self> {
+		Some(self.boxed_clone_canon(hash))
+	}
+
+	fn sync_cache(&mut self, enacted: &[H256], retracted: &[H256], is_best: bool) {
+		StateDB::sync_cache(self, enacted, retracted, is_best)
+	}
+
+	fn state_data(&self, hash: &H256) -> Option<Bytes> {
+		self.journal_db().state(hash)
+	}
+
+	fn prune_ancient(&mut self, chain: &BlockChain, history: u64, history_mem: usize, on_prune: &mut FnMut(DBTransaction)) -> Result<(), ::error::Error> {
+		let number = match self.journal_db().latest_era() {
+			Some(n) => n,
+			None => return Ok(()),
+		};
+
+		// prune all ancient eras until we're below the memory target,
+		// but have at least the minimum number of states.
+		loop {
+			let needs_pruning = self.journal_db().is_pruned() &&
+				self.journal_db().journal_size() >= history_mem;
+
+			if !needs_pruning { break }
+			match self.journal_db().earliest_era() {
+				Some(era) if era + history <= number => {
+					trace!(target: "client", "Pruning state for ancient era {}", era);
+					match chain.block_hash(era) {
+						Some(ancient_hash) => {
+							let mut batch = DBTransaction::new();
+							self.mark_canonical(&mut batch, era, &ancient_hash)?;
+							on_prune(batch);
+							self.journal_db().flush();
+						}
+						None =>
+							debug!(target: "client", "Missing expected hash for block {}", era),
+					}
+				}
+				_ => break, // means that every era is kept, no pruning necessary.
+			}
+		}
+
+		Ok(())
+	}
+
+	fn cache_size(&self) -> usize {
+		StateDB::cache_size(self)
+	}
+
+	fn is_pruned(&self) -> bool {
+		StateDB::is_pruned(self)
+	}
+
+	fn earliest_era(&self) -> Option<u64> {
+		self.journal_db().earliest_era()
+	}
+
+	fn journal_under(&mut self, batch: &mut DBTransaction, now: u64, id: &H256) -> ::std::io::Result<u32> {
+		StateDB::journal_under(self, batch, now, id)
+	}
+
+	fn mem_used(&self) -> usize {
+		StateDB::mem_used(self)
+	}
+}
+
+pub type Client = CoreClient<StateDB>;
+
 /// Blockchain database client backed by a persistent database. Owns and manages a blockchain and a block queue.
 /// Call `import_block()` to import a block asynchronously; `flush_queue()` flushes the queue.
-pub struct Client {
+pub struct CoreClient<BC: ClientBackend> {
 	/// Flag used to disable the client forever. Not to be confused with `liveness`.
 	///
 	/// For example, auto-updater will disable client forever if there is a
@@ -162,7 +284,7 @@ pub struct Client {
 
 	chain: RwLock<Arc<BlockChain>>,
 	tracedb: RwLock<TraceDB<BlockChain>>,
-	engine: Arc<EthEngine<StateDB>>,
+	engine: Arc<EthEngine<BC>>,
 
 	/// Client configuration
 	config: ClientConfig,
@@ -173,7 +295,7 @@ pub struct Client {
 	/// Client uses this to store blocks, traces, etc.
 	db: RwLock<Arc<BlockChainDB>>,
 
-	state_db: RwLock<StateDB>,
+	state_db: RwLock<BC>,
 
 	/// Report on the status of client
 	report: RwLock<ClientReport>,
@@ -218,31 +340,31 @@ pub struct Client {
 	import_lock: Mutex<()>, // FIXME Maybe wrap the whole `Importer` instead?
 
 	/// Used to verify blocks
-	verifier: Box<Verifier<Client, EngineStateBackend=StateDB>>,
+	verifier: Box<Verifier<Self, EngineStateBackend = BC>>,
 
 	/// Queue containing pending blocks
-	block_queue: BlockQueue<StateDB>,
+	block_queue: BlockQueue<BC>,
 
 	/// Ancient block verifier: import an ancient sequence of blocks in order from a starting epoch
-	ancient_verifier: AncientVerifier<StateDB>,
+	ancient_verifier: AncientVerifier<BC>,
 
 	/// A lru cache of recently detected bad blocks
 	bad_blocks: bad_blocks::BadBlocks,
 
 	/// Miner instance
-	miner: Arc<Miner<StateDB>>,
+	miner: Arc<Miner<BC>>,
 }
 
-impl Client {
+impl<BC: ClientBackend> CoreClient<BC> {
 	/// Create a new client with given parameters.
 	/// The database is assumed to have been initialized with the correct columns.
 	pub fn new(
 		config: ClientConfig,
-		spec: &Spec<StateDB>,
+		spec: &Spec<BC>,
 		db: Arc<BlockChainDB>,
-		miner: Arc<Miner<StateDB>>,
+		miner: Arc<Miner<BC>>,
 		message_channel: IoChannel<ClientIoMessage>,
-	) -> Result<Arc<Client>, ::error::Error> {
+	) -> Result<Arc<Self>, ::error::Error> {
 		let trie_spec = match config.fat_db {
 			true => TrieSpec::Fat,
 			false => TrieSpec::Secure,
@@ -255,21 +377,10 @@ impl Client {
 			accountdb: Default::default(),
 		};
 
-		let journal_db = journaldb::new(db.key_value().clone(), config.pruning, ::db::COL_STATE);
-		let mut state_db = StateDB::new(journal_db, config.state_cache_size);
-		if state_db.journal_db().is_empty() {
-			// Sets the correct state root.
-			state_db = spec.ensure_db_good(state_db, &factories)?;
-			let mut batch = DBTransaction::new();
-			state_db.journal_under(&mut batch, 0, &spec.genesis_header().hash())?;
-			db.key_value().write(batch)?;
-		}
 
 		let gb = spec.genesis_block();
 		let chain = Arc::new(BlockChain::new(config.blockchain.clone(), &gb, db.clone()));
 		let tracedb = RwLock::new(TraceDB::new(config.tracing.clone(), db.clone(), chain.clone()));
-
-		trace!("Cleanup journal: DB Earliest = {:?}, Latest = {:?}", state_db.journal_db().earliest_era(), state_db.journal_db().latest_era());
 
 		let history = if config.history < MIN_HISTORY_SIZE {
 			info!(target: "client", "Ignoring pruning history parameter of {}\
@@ -280,11 +391,7 @@ impl Client {
 			config.history
 		};
 
-		if !chain.block_header_data(&chain.best_block_hash()).map_or(true, |h| state_db.journal_db().contains(&h.state_root())) {
-			warn!("State root not found for block #{} ({:x})", chain.best_block_number(), chain.best_block_hash());
-		}
-
-		let engine = spec.engine.clone();
+		let engine: Arc<EthEngine<BC>> = spec.engine.clone();
 
 		let awake = match config.mode { Mode::Dark(..) | Mode::Off => false, _ => true };
 
@@ -296,7 +403,7 @@ impl Client {
 		}
 
 		let verifier_type = config.verifier_type.clone();
-		let client = Arc::new(Client {
+		let client = Arc::new(Self {
 			enabled: AtomicBool::new(true),
 			sleep_state: Mutex::new(SleepState::new(awake)),
 			liveness: AtomicBool::new(awake),
@@ -306,7 +413,7 @@ impl Client {
 			engine: engine.clone(),
 			pruning: config.pruning.clone(),
 			db: RwLock::new(db.clone()),
-			state_db: RwLock::new(state_db),
+			state_db: RwLock::new(BC::create(&db, Some((&spec, &factories)), config.pruning, config.state_cache_size)?),
 			report: RwLock::new(Default::default()),
 			io_channel: RwLock::new(message_channel),
 			notify: RwLock::new(Vec::new()),
@@ -332,7 +439,7 @@ impl Client {
 
 		// prune old states.
 		{
-			let state_db = client.state_db.read().boxed_clone();
+			let state_db = client.state_db.read().clone();
 			let chain = client.chain.read();
 			client.prune_ancient(state_db, &chain)?;
 		}
@@ -400,7 +507,7 @@ impl Client {
 	}
 
 	/// Returns engine reference.
-	pub fn engine(&self) -> &EthEngine<StateDB> {
+	pub fn engine(&self) -> &EthEngine<BC> {
 		&*self.engine
 	}
 
@@ -489,38 +596,10 @@ impl Client {
 	}
 
 	// prune ancient states until below the memory limit or only the minimum amount remain.
-	fn prune_ancient(&self, mut state_db: StateDB, chain: &BlockChain) -> Result<(), ::error::Error> {
-		let number = match state_db.journal_db().latest_era() {
-			Some(n) => n,
-			None => return Ok(()),
-		};
-
-		// prune all ancient eras until we're below the memory target,
-		// but have at least the minimum number of states.
-		loop {
-			let needs_pruning = state_db.journal_db().is_pruned() &&
-				state_db.journal_db().journal_size() >= self.config.history_mem;
-
-			if !needs_pruning { break }
-			match state_db.journal_db().earliest_era() {
-				Some(era) if era + self.history <= number => {
-					trace!(target: "client", "Pruning state for ancient era {}", era);
-					match chain.block_hash(era) {
-						Some(ancient_hash) => {
-							let mut batch = DBTransaction::new();
-							state_db.mark_canonical(&mut batch, era, &ancient_hash)?;
-							self.db.read().key_value().write_buffered(batch);
-							state_db.journal_db().flush();
-						}
-						None =>
-							debug!(target: "client", "Missing expected hash for block {}", era),
-					}
-				}
-				_ => break, // means that every era is kept, no pruning necessary.
-			}
-		}
-
-		Ok(())
+	fn prune_ancient(&self, mut state_db: BC, chain: &BlockChain) -> Result<(), ::error::Error> {
+		state_db.prune_ancient(chain, self.history, self.config.history_mem, &mut |batch| {
+			self.db.read().key_value().write_buffered(batch);
+		})
 	}
 
 	fn update_last_hashes(&self, parent: &H256, hash: &H256) {
@@ -535,12 +614,12 @@ impl Client {
 
 	/// Get shared miner reference.
 	#[cfg(test)]
-	pub fn miner(&self) -> Arc<Miner<StateDB>> {
+	pub fn miner(&self) -> Arc<Miner<BC>> {
 		self.miner.clone()
 	}
 
 	#[cfg(test)]
-	pub fn state_db(&self) -> ::parking_lot::RwLockReadGuard<StateDB> {
+	pub fn state_db(&self) -> ::parking_lot::RwLockReadGuard<BC> {
 		self.state_db.read()
 	}
 
@@ -555,10 +634,10 @@ impl Client {
 	}
 
 	/// Get a copy of the best block's state.
-	pub fn latest_state(&self) -> State<StateDB> {
+	pub fn latest_state(&self) -> State<BC> {
 		let header = self.best_block_header();
 		State::from_existing(
-			self.state_db.read().boxed_clone_canon(&header.hash()),
+			self.state_db.read().state_at_hash(&header.hash()).or_else(|| self.state_db.read().state_at_proof(&self.chain.read().best_block_proof()?)).expect("either proof or hash should work"),
 			*header.state_root(),
 			self.engine.account_start_nonce(header.number()),
 			self.factories.clone()
@@ -567,11 +646,7 @@ impl Client {
 	}
 
 	/// Attempt to get a copy of a specific block's final state.
-	///
-	/// This will not fail if given BlockId::Latest.
-	/// Otherwise, this can fail (but may not) if the DB prunes state or the block
-	/// is unknown.
-	pub fn state_at(&self, id: BlockId) -> Option<State<StateDB>> {
+	pub fn state_at(&self, id: BlockId) -> Option<State<BC>> {
 		// fast path for latest state.
 		match id.clone() {
 			BlockId::Latest => return Some(self.latest_state()),
@@ -584,7 +659,7 @@ impl Client {
 		};
 
 		self.block_header(id).and_then(|header| {
-			let db = self.state_db.read().boxed_clone();
+			let db = self.state_db.read().clone();
 
 			// early exit for pruned blocks
 			if db.is_pruned() && self.pruning_info().earliest_state > block_number {
@@ -600,7 +675,7 @@ impl Client {
 	///
 	/// This will not fail if given BlockId::Latest.
 	/// Otherwise, this can fail (but may not) if the DB prunes state.
-	pub fn state_at_beginning(&self, id: BlockId) -> Option<State<StateDB>> {
+	pub fn state_at_beginning(&self, id: BlockId) -> Option<State<BC>> {
 		match self.block_number(id) {
 			None => None,
 			Some(0) => self.state_at(id),
@@ -677,7 +752,7 @@ impl Client {
 	/// Take a snapshot at the given block.
 	/// If the ID given is "latest", this will default to 1000 blocks behind.
 	pub fn take_snapshot<W: snapshot_io::SnapshotWriter + Send>(&self, writer: W, at: BlockId, p: &snapshot::Progress) -> Result<(), EthcoreError> {
-		let db = self.state_db.read().journal_db().boxed_clone();
+		let db = self.state_db.read().clone();
 		let best_block_number = self.chain_info().best_block_number;
 		let block_number = self.block_number(at).ok_or(snapshot::Error::InvalidStartingBlock(at))?;
 
@@ -934,7 +1009,7 @@ impl Client {
 		imported
 	}
 
-	fn check_and_lock_block(&self, block: PreverifiedBlock) -> EthcoreResult<LockedBlock<StateDB>> {
+	fn check_and_lock_block(&self, block: PreverifiedBlock) -> EthcoreResult<LockedBlock<BC>> {
 		let engine = &*self.engine;
 		let header = block.header.clone();
 
@@ -980,7 +1055,13 @@ impl Client {
 
 		// Enact Verified Block
 		let last_hashes = self.build_last_hashes(header.parent_hash());
-		let db = self.state_db.read().boxed_clone_canon(header.parent_hash());
+		let db = match self.state_db.read().state_at_hash(header.parent_hash()).or(block.proof.as_ref().and_then(|v| self.state_db.read().state_at_proof(v))) {
+			Some(h) => h,
+			None => {
+				warn!("No state found for #{} ({}): could not find state at parent hash {} nor proof for block", header.number(), header.hash(), header.parent_hash());
+				bail!("State not found");
+			}
+		};
 
 		let is_epoch_begin = chain.epoch_transition(parent.number(), *header.parent_hash()).is_some();
 		let enact_result = enact_verified(
@@ -1050,7 +1131,7 @@ impl Client {
 	// it is for reconstructing the state transition.
 	//
 	// The header passed is from the original block data and is sealed.
-	fn commit_block<B>(&self, block: B, header: &Header, block_data: encoded::Block) -> ImportRoute where B: Drain<StateDB> {
+	fn commit_block<B>(&self, block: B, header: &Header, block_data: encoded::Block) -> ImportRoute where B: Drain<BC> {
 		let hash = &header.hash();
 		let number = header.number();
 		let parent = header.parent_hash();
@@ -1168,7 +1249,7 @@ impl Client {
 		header: &Header,
 		block_bytes: &[u8],
 		receipts: &[Receipt],
-		state_db: &StateDB,
+		state_db: &BC,
 		chain: &BlockChain,
 		batch: &mut DBTransaction
 	) {
@@ -1199,7 +1280,7 @@ impl Client {
 						};
 
 						let call = move |addr, data| {
-							let mut state_db = state_db.boxed_clone();
+							let mut state_db = state_db.clone();
 							let backend = ::state::backend::Proving::new(state_db.as_hashdb_mut());
 
 							let transaction =
@@ -1292,7 +1373,7 @@ impl Client {
 	}
 }
 
-impl snapshot::DatabaseRestore for Client {
+impl<BC: ClientBackend> snapshot::DatabaseRestore for CoreClient<BC> {
 	/// Restart the client with a new backend
 	fn restore_db(&self, new_db: &str) -> Result<(), EthcoreError> {
 		trace!(target: "snapshot", "Replacing client database with {:?}", new_db);
@@ -1306,20 +1387,20 @@ impl snapshot::DatabaseRestore for Client {
 		db.restore(new_db)?;
 
 		let cache_size = state_db.cache_size();
-		*state_db = StateDB::new(journaldb::new(db.key_value().clone(), self.pruning, ::db::COL_STATE), cache_size);
+		*state_db = BC::create(&db, None, self.pruning, cache_size)?;
 		*chain = Arc::new(BlockChain::new(self.config.blockchain.clone(), &[], db.clone()));
 		*tracedb = TraceDB::new(self.config.tracing.clone(), db.clone(), chain.clone());
 		Ok(())
 	}
 }
 
-impl Nonce for Client {
+impl<BC: ClientBackend> Nonce for CoreClient<BC> {
 	fn nonce(&self, address: &Address, id: BlockId) -> Option<U256> {
 		self.state_at(id).and_then(|s| s.nonce(address).ok())
 	}
 }
 
-impl Balance for Client {
+impl<BC: ClientBackend> Balance for CoreClient<BC> {
 	fn balance(&self, address: &Address, state: StateOrBlock) -> Option<U256> {
 		match state {
 			StateOrBlock::State(s) => s.balance(address).ok(),
@@ -1328,9 +1409,9 @@ impl Balance for Client {
 	}
 }
 
-impl AccountData for Client {}
+impl<BC: ClientBackend> AccountData for CoreClient<BC> {}
 
-impl ChainInfo for Client {
+impl<BC: ClientBackend> ChainInfo for CoreClient<BC> {
 	fn chain_info(&self) -> BlockChainInfo {
 		let mut chain_info = self.chain.read().chain_info();
 		chain_info.pending_total_difficulty = chain_info.total_difficulty + self.block_queue.total_difficulty();
@@ -1338,7 +1419,7 @@ impl ChainInfo for Client {
 	}
 }
 
-impl BlockInfo for Client {
+impl<BC: ClientBackend> BlockInfo for CoreClient<BC> {
 	fn block_header(&self, id: BlockId) -> Option<encoded::Header> {
 		let chain = self.chain.read();
 
@@ -1360,15 +1441,15 @@ impl BlockInfo for Client {
 	}
 }
 
-impl TransactionInfo for Client {
+impl<BC: ClientBackend> TransactionInfo for CoreClient<BC> {
 	fn transaction_block(&self, id: TransactionId) -> Option<H256> {
 		self.transaction_address(id).map(|addr| addr.block_hash)
 	}
 }
 
-impl BlockChainTrait for Client {}
+impl<BC: ClientBackend> BlockChainTrait for CoreClient<BC> {}
 
-impl RegistryInfo for Client {
+impl<BC: ClientBackend> RegistryInfo for CoreClient<BC> {
 	fn registry_address(&self, name: String, block: BlockId) -> Option<Address> {
 		use ethabi::FunctionOutputDecoder;
 
@@ -1384,7 +1465,7 @@ impl RegistryInfo for Client {
 	}
 }
 
-impl CallContract for Client {
+impl<BC: ClientBackend> CallContract for CoreClient<BC> {
 	fn call_contract(&self, block_id: BlockId, address: Address, data: Bytes) -> Result<Bytes, String> {
 		let state_pruned = || CallError::StatePruned.to_string();
 		let state = &mut self.state_at(block_id).ok_or_else(&state_pruned)?;
@@ -1398,7 +1479,7 @@ impl CallContract for Client {
 	}
 }
 
-impl ImportBlock for Client {
+impl<BC: ClientBackend> ImportBlock for CoreClient<BC> {
 	fn import_block(&self, unverified: Unverified) -> EthcoreResult<H256> {
 		if self.chain.read().is_known(&unverified.hash()) {
 			bail!(EthcoreErrorKind::Import(ImportErrorKind::AlreadyInChain));
@@ -1434,20 +1515,20 @@ impl ImportBlock for Client {
 	}
 }
 
-impl StateClient for Client {
-	type State = State<::state_db::StateDB>;
+impl<BC: ClientBackend> StateClient for CoreClient<BC> {
+	type State = State<BC>;
 
 	fn latest_state(&self) -> Self::State {
-		Client::latest_state(self)
+		Self::latest_state(self)
 	}
 
 	fn state_at(&self, id: BlockId) -> Option<Self::State> {
-		Client::state_at(self, id)
+		Self::state_at(self, id)
 	}
 }
 
-impl Call for Client {
-	type State = State<::state_db::StateDB>;
+impl<BC: ClientBackend> Call for CoreClient<BC> {
+	type State = State<BC>;
 
 	fn call(&self, transaction: &SignedTransaction, analytics: CallAnalytics, state: &mut Self::State, header: &Header) -> Result<Executed, CallError> {
 		let env_info = EnvInfo {
@@ -1567,21 +1648,21 @@ impl Call for Client {
 	}
 }
 
-impl EngineInfo for Client {
-	type EngineStateBackend = StateDB;
-	fn engine(&self) -> &EthEngine<StateDB> {
-		Client::engine(self)
+impl<BC: ClientBackend> EngineInfo for CoreClient<BC> {
+	type EngineStateBackend = BC;
+	fn engine(&self) -> &EthEngine<BC> {
+		Self::engine(self)
 	}
 }
 
-impl BadBlocks for Client {
+impl<BC: ClientBackend> BadBlocks for CoreClient<BC> {
 	fn bad_blocks(&self) -> Vec<(Unverified, String)> {
 		self.bad_blocks.bad_blocks()
 	}
 }
 
-impl BlockChainClient for Client {
-	type StateBackend = StateDB;
+impl<BC: ClientBackend> BlockChainClient for CoreClient<BC> {
+	type StateBackend = BC;
 	fn replay(&self, id: TransactionId, analytics: CallAnalytics) -> Result<Executed, CallError> {
 		let address = self.transaction_address(id).ok_or(CallError::TransactionNotFound)?;
 		let block = BlockId::Hash(address.block_hash);
@@ -1868,7 +1949,7 @@ impl BlockChainClient for Client {
 	}
 
 	fn state_data(&self, hash: &H256) -> Option<Bytes> {
-		self.state_db.read().journal_db().state(hash)
+		self.state_db.read().state_data(hash)
 	}
 
 	fn block_receipts(&self, hash: &H256) -> Option<BlockReceipts> {
@@ -2089,10 +2170,7 @@ impl BlockChainClient for Client {
 	}
 
 	fn pruning_info(&self) -> PruningInfo {
-		PruningInfo {
-			earliest_chain: self.chain.read().first_block_number().unwrap_or(1),
-			earliest_state: self.state_db.read().journal_db().earliest_era().unwrap_or(0),
-		}
+		self.state_db.read().pruning_info(&self.chain.read())
 	}
 
 	fn transact_contract(&self, address: Address, data: Bytes) -> Result<(), transaction::Error> {
@@ -2117,7 +2195,7 @@ impl BlockChainClient for Client {
 	}
 }
 
-impl IoClient for Client {
+impl<BC: ClientBackend> IoClient for CoreClient<BC> {
 	fn queue_transactions(&self, transactions: Vec<Bytes>, peer_id: usize) {
 		trace_time!("queue_transactions");
 		let len = transactions.len();
@@ -2213,9 +2291,9 @@ impl IoClient for Client {
 	}
 }
 
-impl ReopenBlock for Client {
-	type ReopenBlockStateBackend = StateDB;
-	fn reopen_block(&self, block: ClosedBlock<StateDB>) -> OpenBlock<StateDB> {
+impl<BC: ClientBackend> ReopenBlock for CoreClient<BC> {
+	type ReopenBlockStateBackend = BC;
+	fn reopen_block(&self, block: ClosedBlock<BC>) -> OpenBlock<BC> {
 		let engine = &*self.engine;
 		let mut block = block.reopen(engine);
 		let max_uncles = engine.maximum_uncle_count(block.header().number());
@@ -2244,10 +2322,10 @@ impl ReopenBlock for Client {
 	}
 }
 
-impl PrepareOpenBlock for Client {
-	type PrepareOpenBlockStateBackend = StateDB;
+impl<BC: ClientBackend> PrepareOpenBlock for CoreClient<BC> {
+	type PrepareOpenBlockStateBackend = BC;
 
-	fn prepare_open_block(&self, author: Address, gas_range_target: (U256, U256), extra_data: Bytes) -> Result<OpenBlock<StateDB>, EthcoreError> {
+	fn prepare_open_block(&self, author: Address, gas_range_target: (U256, U256), extra_data: Bytes) -> Result<OpenBlock<BC>, EthcoreError> {
 		let engine = &*self.engine;
 		let chain = self.chain.read();
 		let best_header = chain.best_block_header();
@@ -2258,7 +2336,7 @@ impl PrepareOpenBlock for Client {
 			engine,
 			self.factories.clone(),
 			self.tracedb.read().tracing_enabled(),
-			self.state_db.read().boxed_clone_canon(&h),
+			self.state_db.read().state_at_hash(&best_header.hash()).unwrap(),
 			&best_header,
 			self.build_last_hashes(&h),
 			author,
@@ -2286,17 +2364,17 @@ impl PrepareOpenBlock for Client {
 	}
 }
 
-impl BlockProducer for Client {}
+impl<BC: ClientBackend> BlockProducer for CoreClient<BC> {}
 
-impl ScheduleInfo for Client {
+impl<BC: ClientBackend> ScheduleInfo for CoreClient<BC> {
 	fn latest_schedule(&self) -> Schedule {
 		self.engine.schedule(self.latest_env_info().number)
 	}
 }
 
-impl ImportSealedBlock for Client {
-	type ImportSealedBlockStateBackend = StateDB;
-	fn import_sealed_block(&self, block: SealedBlock<StateDB>) -> EthcoreResult<H256> {
+impl<BC: ClientBackend> ImportSealedBlock for CoreClient<BC> {
+	type ImportSealedBlockStateBackend = BC;
+	fn import_sealed_block(&self, block: SealedBlock<BC>) -> EthcoreResult<H256> {
 		let start = Instant::now();
 		let raw = block.rlp_bytes();
 		let header = block.header().clone();
@@ -2351,9 +2429,9 @@ impl ImportSealedBlock for Client {
 	}
 }
 
-impl BroadcastProposalBlock for Client {
-	type BroadcastProposalBlockStateBackend = StateDB;
-	fn broadcast_proposal_block(&self, block: SealedBlock<StateDB>) {
+impl<BC: ClientBackend> BroadcastProposalBlock for CoreClient<BC> {
+	type BroadcastProposalBlockStateBackend = BC;
+	fn broadcast_proposal_block(&self, block: SealedBlock<BC>) {
 		const DURATION_ZERO: Duration = Duration::from_millis(0);
 		self.notify(|notify| {
 			notify.new_blocks(
@@ -2371,13 +2449,13 @@ impl BroadcastProposalBlock for Client {
 	}
 }
 
-impl SealedBlockImporter for Client {}
+impl<BC: ClientBackend> SealedBlockImporter for CoreClient<BC> {}
 
-impl ::miner::TransactionVerifierClient for Client {}
-impl ::miner::BlockChainClient for Client {}
+impl<BC: ClientBackend> ::miner::TransactionVerifierClient for CoreClient<BC> {}
+impl<BC: ClientBackend> ::miner::BlockChainClient for CoreClient<BC> {}
 
-impl super::traits::EngineClient for Client {
-	type StateBackend = StateDB;
+impl<BC: ClientBackend> super::traits::EngineClient for CoreClient<BC> {
+	type StateBackend = BC;
 	fn update_sealing(&self) {
 		self.miner.update_sealing(self)
 	}
@@ -2397,18 +2475,18 @@ impl super::traits::EngineClient for Client {
 		self.chain.read().epoch_transition_for(parent_hash)
 	}
 
-	fn as_full_client(&self) -> Option<&BlockChainClient<StateBackend = StateDB>> { Some(self) }
+	fn as_full_client(&self) -> Option<&BlockChainClient<StateBackend = BC>> { Some(self) }
 
 	fn block_number(&self, id: BlockId) -> Option<BlockNumber> {
 		BlockChainClient::block_number(self, id)
 	}
 
 	fn block_header(&self, id: BlockId) -> Option<::encoded::Header> {
-		BlockChainClient::<StateBackend = StateDB>::block_header(self, id)
+		BlockChainClient::<StateBackend = BC>::block_header(self, id)
 	}
 }
 
-impl ProvingBlockChainClient for Client {
+impl<BC: ClientBackend> ProvingBlockChainClient for CoreClient<BC> {
 	fn prove_storage(&self, key1: H256, key2: H256, id: BlockId) -> Option<(Vec<Bytes>, H256)> {
 		self.state_at(id)
 			.and_then(move |state| state.prove_storage(key1, key2).ok())
@@ -2426,10 +2504,10 @@ impl ProvingBlockChainClient for Client {
 		};
 
 		env_info.gas_limit = transaction.gas.clone();
-		let mut jdb = self.state_db.read().journal_db().boxed_clone();
+		let mut cloned_db = self.state_db.read().clone();
 
 		state::prove_transaction_virtual(
-			jdb.as_hashdb_mut(),
+			cloned_db.as_hashdb_mut(),
 			header.state_root().clone(),
 			&transaction,
 			self.engine.machine(),
@@ -2445,14 +2523,14 @@ impl ProvingBlockChainClient for Client {
 	}
 }
 
-impl ProvingCallContract for Client {
+impl<BC: ClientBackend> ProvingCallContract for CoreClient<BC> {
 	fn prove_call_contract(&self, block_id: BlockId, address: Address, data: Bytes) -> Result<(Bytes, Proof), String> {
 		let state_pruned = || CallError::StatePruned.to_string();
 
 		// From state_at
 
 		let mut proving_state = self.block_header(block_id).and_then(|header| {
-			let state_db = self.state_db.read().boxed_clone();
+			let state_db = self.state_db.read().clone();
 			let backend = ::state::backend::Proving::new(state_db);
 
 			let root = header.state_root();
@@ -2481,9 +2559,9 @@ impl ProvingCallContract for Client {
 	}
 }
 
-impl SnapshotClient for Client {}
+impl<BC: ClientBackend> SnapshotClient for CoreClient<BC> {}
 
-impl Drop for Client {
+impl<BC: ClientBackend> Drop for CoreClient<BC> {
 	fn drop(&mut self) {
 		self.engine.stop();
 	}

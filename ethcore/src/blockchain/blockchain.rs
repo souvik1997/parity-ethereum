@@ -46,6 +46,7 @@ use rayon::prelude::*;
 use receipt::Receipt;
 use rlp_compress::{compress, decompress, blocks_swapper};
 use rlp::RlpStream;
+use state::backend::Proof;
 use transaction::*;
 use types::blockchain_info::BlockChainInfo;
 use types::tree_route::TreeRoute;
@@ -1440,6 +1441,11 @@ impl BlockChain {
 	/// Get best block hash.
 	pub fn best_block_hash(&self) -> H256 {
 		self.best_block.read().header.hash()
+	}
+
+	/// Get best block proof
+	pub fn best_block_proof(&self) -> Option<Proof> {
+		self.best_block.read().block.view().proof()
 	}
 
 	/// Get best block number.

@@ -558,6 +558,7 @@ mod tests {
 			transactions,
 			uncles: block.uncles,
 			bytes: bytes.to_vec(),
+			proof: None,
 		};
 
 		let full_params = FullFamilyParams {
