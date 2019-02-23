@@ -18,6 +18,8 @@ use std::path::PathBuf;
 use ethcore::ethstore::{EthStore, SecretStore, import_account, import_accounts, read_geth_accounts};
 use ethcore::ethstore::accounts_dir::RootDiskDirectory;
 use ethcore::ethstore::SecretVaultRef;
+use ethcore::state_db::StateDB;
+use ethcore::spec::Spec;
 use ethcore::account_provider::{AccountProvider, AccountProviderSettings};
 use helpers::{password_prompt, password_from_file};
 use params::SpecType;
@@ -71,7 +73,7 @@ pub fn execute(cmd: AccountCmd) -> Result<String, String> {
 }
 
 fn keys_dir(path: String, spec: SpecType) -> Result<RootDiskDirectory, String> {
-	let spec = spec.spec(&::std::env::temp_dir())?;
+	let spec: Spec<StateDB> = spec.spec(&::std::env::temp_dir())?;
 	let mut path = PathBuf::from(&path);
 	path.push(spec.data_dir);
 	RootDiskDirectory::create(path).map_err(|e| format!("Could not open keys directory: {}", e))

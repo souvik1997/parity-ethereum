@@ -17,10 +17,9 @@
 use std::{str, fs, fmt};
 use std::time::Duration;
 
-use ethcore::client::Mode;
+use ethcore::client::{Mode, ClientBackend};
 use ethcore::ethereum;
 use ethcore::spec::{Spec, SpecParams};
-use ethcore::state_db::StateDB;
 use ethereum_types::{U256, Address};
 use parity_runtime::Executor;
 use hash_fetch::fetch::Client as FetchClient;
@@ -106,7 +105,7 @@ impl fmt::Display for SpecType {
 }
 
 impl SpecType {
-	pub fn spec<'a, T: Into<SpecParams<'a>>>(&self, params: T) -> Result<Spec<StateDB>, String> {
+	pub fn spec<'a, BC: ClientBackend, T: Into<SpecParams<'a>>>(&self, params: T) -> Result<Spec<BC>, String> {
 		let params = params.into();
 		match *self {
 			SpecType::Foundation => Ok(ethereum::new_foundation(params)),

@@ -17,7 +17,9 @@
 //! Watcher for snapshot-related chain events.
 
 use parking_lot::Mutex;
-use client::{BlockInfo, Client, ChainNotify, NewBlocks, ClientIoMessage, ClientBackend};
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
+use client::{BlockInfo, CoreClient, ChainNotify, NewBlocks, ClientIoMessage, ClientBackend};
 use ids::BlockId;
 
 use io::IoChannel;
@@ -32,12 +34,13 @@ trait Oracle: Send + Sync {
 	fn is_major_importing(&self) -> bool;
 }
 
-struct StandardOracle<F> where F: 'static + Send + Sync + Fn() -> bool {
-	client: Arc<Client>,
+struct StandardOracle<F, BC> where F: 'static + Send + Sync + Fn() -> bool, BC: ClientBackend {
+	client: Arc<CoreClient<BC>>,
 	sync_status: F,
+	_phantom: SafePhantomData<BC>,
 }
 
-impl<F> Oracle for StandardOracle<F>
+impl<F, BC: ClientBackend> Oracle for StandardOracle<F, BC>
 	where F: Send + Sync + Fn() -> bool
 {
 	fn to_number(&self, hash: H256) -> Option<u64> {
@@ -75,20 +78,21 @@ pub struct Watcher {
 	oracle: Box<Oracle>,
 	broadcast: Box<Broadcast>,
 	period: u64,
-	history: u64,
+	history: u64
 }
 
 impl Watcher {
 	/// Create a new `Watcher` which will trigger a snapshot event
 	/// once every `period` blocks, but only after that block is
 	/// `history` blocks old.
-	pub fn new<F, BC: ClientBackend>(client: Arc<Client>, sync_status: F, channel: IoChannel<ClientIoMessage<BC>>, period: u64, history: u64) -> Self
+	pub fn new<F, BC: ClientBackend>(client: Arc<CoreClient<BC>>, sync_status: F, channel: IoChannel<ClientIoMessage<BC>>, period: u64, history: u64) -> Self
 		where F: 'static + Send + Sync + Fn() -> bool
 	{
 		Watcher {
 			oracle: Box::new(StandardOracle {
 				client: client,
 				sync_status: sync_status,
+				_phantom: PhantomData,
 			}),
 			broadcast: Box::new(Mutex::new(channel)),
 			period: period,

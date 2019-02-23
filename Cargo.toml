@@ -69,6 +69,7 @@ mem = { path = "util/mem" }
 ethcore-secretstore = { path = "secret_store", optional = true }
 
 registrar = { path = "registrar" }
+rich-phantoms = "0.1.0"
 
 [build-dependencies]
 rustc_version = "0.2"

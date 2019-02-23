@@ -21,7 +21,7 @@ use cid::{ToCid, Codec};
 use multihash::Hash;
 use ethereum_types::H256;
 use bytes::Bytes;
-use ethcore::client::{BlockId, TransactionId};
+use ethcore::client::{BlockId, TransactionId, ClientBackend};
 
 type Reason = &'static str;
 
@@ -33,7 +33,7 @@ pub enum Out {
 	Bad(Reason),
 }
 
-impl IpfsHandler {
+impl<BC: ClientBackend> IpfsHandler<BC> {
 	/// Route path + query string to a specialized method
 	pub fn route(&self, path: &str, query: Option<&str>) -> Out {
 		match path {
@@ -118,8 +118,9 @@ mod tests {
 	use std::sync::Arc;
 	use super::*;
 	use ethcore::client::TestBlockChainClient;
+	use ethcore::state_db::StateDB;
 
-	fn get_mocked_handler() -> IpfsHandler {
+	fn get_mocked_handler() -> IpfsHandler<StateDB> {
 		IpfsHandler::new(None.into(), None.into(), Arc::new(TestBlockChainClient::new()))
 	}
 

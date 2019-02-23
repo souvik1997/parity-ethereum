@@ -16,12 +16,14 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+extern crate rich_phantoms;
+use self::rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 use dir::default_data_path;
 use dir::helpers::replace_home;
 use ethcore::account_provider::AccountProvider;
-use ethcore::client::Client;
+use ethcore::client::{CoreClient, ClientBackend};
 use ethcore::miner::Miner;
-use ethcore::state_db::StateDB;
 use ethkey::{Secret, Public};
 use sync::SyncProvider;
 use ethereum_types::Address;
@@ -86,13 +88,13 @@ pub struct Configuration {
 }
 
 /// Secret store dependencies
-pub struct Dependencies<'a> {
+pub struct Dependencies<'a, BC: ClientBackend> {
 	/// Blockchain client.
-	pub client: Arc<Client>,
+	pub client: Arc<CoreClient<BC>>,
 	/// Sync provider.
 	pub sync: Arc<SyncProvider>,
 	/// Miner service.
-	pub miner: Arc<Miner<StateDB>>,
+	pub miner: Arc<Miner<BC>>,
 	/// Account provider.
 	pub account_provider: Arc<AccountProvider>,
 	/// Passed accounts passwords.
@@ -101,15 +103,18 @@ pub struct Dependencies<'a> {
 
 #[cfg(not(feature = "secretstore"))]
 mod server {
-	use super::{Configuration, Dependencies};
+	use super::{Configuration, Dependencies, SafePhantomData};
+	use std::marker::PhantomData;
+	use ethcore::client::ClientBackend;
+	use ethcore::spec::Spec;
 
 	/// Noop key server implementation
-	pub struct KeyServer;
+	pub struct KeyServer<BC: ClientBackend>(SafePhantomData<BC>);
 
-	impl KeyServer {
+	impl<BC: ClientBackend> KeyServer<BC> {
 		/// Create new noop key server
-		pub fn new(_conf: Configuration, _deps: Dependencies) -> Result<Self, String> {
-			Ok(KeyServer)
+		pub fn new(_conf: Configuration, _deps: Dependencies<BC>) -> Result<Self, String> {
+			Ok(KeyServer(PhantomData))
 		}
 	}
 }
@@ -117,11 +122,14 @@ mod server {
 #[cfg(feature = "secretstore")]
 mod server {
 	use std::sync::Arc;
+	use std::marker::PhantomData;
 	use ethcore_secretstore;
 	use ethkey::KeyPair;
 	use ansi_term::Colour::{Red, White};
 	use db;
-	use super::{Configuration, Dependencies, NodeSecretKey, ContractAddress};
+	use super::{Configuration, Dependencies, NodeSecretKey, ContractAddress, SafePhantomData};
+	use ethcore::client::ClientBackend;
+	use ethcore::spec::Spec;
 
 	fn into_service_contract_address(address: ContractAddress) -> ethcore_secretstore::ContractAddress {
 		match address {
@@ -131,13 +139,14 @@ mod server {
 	}
 
 	/// Key server
-	pub struct KeyServer {
+	pub struct KeyServer<BC: ClientBackend> {
 		_key_server: Box<ethcore_secretstore::KeyServer>,
+		_phantom: SafePhantomData<BC>
 	}
 
-	impl KeyServer {
+	impl<BC: ClientBackend> KeyServer<BC> {
 		/// Create new key server
-		pub fn new(mut conf: Configuration, deps: Dependencies) -> Result<Self, String> {
+		pub fn new(mut conf: Configuration, deps: Dependencies<BC>) -> Result<Self, String> {
 			let self_secret: Arc<ethcore_secretstore::NodeKeyPair> = match conf.self_secret.take() {
 				Some(NodeSecretKey::Plain(secret)) => Arc::new(ethcore_secretstore::PlainNodeKeyPair::new(
 					KeyPair::from_secret(secret).map_err(|e| format!("invalid secret: {}", e))?)),
@@ -204,6 +213,7 @@ mod server {
 
 			Ok(KeyServer {
 				_key_server: key_server,
+				_phantom: PhantomData
 			})
 		}
 	}
@@ -239,7 +249,7 @@ impl Default for Configuration {
 }
 
 /// Start secret store-related functionality
-pub fn start(conf: Configuration, deps: Dependencies) -> Result<Option<KeyServer>, String> {
+pub fn start<BC: ClientBackend>(conf: Configuration, deps: Dependencies<BC>) -> Result<Option<KeyServer<BC>>, String> {
 	if !conf.enabled {
 		return Ok(None);
 	}

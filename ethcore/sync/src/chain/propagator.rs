@@ -16,7 +16,7 @@
 
 use bytes::Bytes;
 use ethereum_types::H256;
-use ethcore::client::BlockChainInfo;
+use ethcore::client::{BlockChainInfo, ClientBackend};
 use ethcore::header::BlockNumber;
 use fastmap::H256FastSet;
 use network::{PeerId, PacketId};
@@ -48,7 +48,7 @@ fn accepts_service_transaction(client_id: &str) -> bool {
 	const LEGACY_CLIENT_ID_PREFIX: &'static str = "Parity/";
 	const PARITY_CLIENT_ID_PREFIX: &'static str = "Parity-Ethereum/";
 	const VERSION_PREFIX: &'static str = "/v";
-	
+
 	let idx = client_id.rfind(VERSION_PREFIX).map(|idx| idx + VERSION_PREFIX.len()).unwrap_or(client_id.len());
 	let splitted = if client_id.starts_with(LEGACY_CLIENT_ID_PREFIX) || client_id.starts_with(PARITY_CLIENT_ID_PREFIX) {
 		client_id[idx..].split('.')
@@ -68,10 +68,10 @@ pub struct SyncPropagator;
 
 impl SyncPropagator {
 	/// propagates latest block to a set of peers
-	pub fn propagate_blocks(sync: &mut ChainSync, chain_info: &BlockChainInfo, io: &mut SyncIo, blocks: &[H256], peers: &[PeerId]) -> usize {
+	pub fn propagate_blocks<BC: ClientBackend>(sync: &mut ChainSync, chain_info: &BlockChainInfo, io: &mut SyncIo<SyncIoBackend = BC>, blocks: &[H256], peers: &[PeerId]) -> usize {
 		trace!(target: "sync", "Sending NewBlocks to {:?}", peers);
 		let sent = peers.len();
-		let mut send_packet = |io: &mut SyncIo, rlp: Bytes| {
+		let mut send_packet = |io: &mut SyncIo<SyncIoBackend = BC>, rlp: Bytes| {
 			for peer_id in peers {
 				SyncPropagator::send_packet(io, *peer_id, NEW_BLOCK_PACKET, rlp.clone());
 				if let Some(ref mut peer) = sync.peers.get_mut(peer_id) {
@@ -94,7 +94,7 @@ impl SyncPropagator {
 	}
 
 	/// propagates new known hashes to all peers
-	pub fn propagate_new_hashes(sync: &mut ChainSync, chain_info: &BlockChainInfo, io: &mut SyncIo, peers: &[PeerId]) -> usize {
+	pub fn propagate_new_hashes<BC: ClientBackend>(sync: &mut ChainSync, chain_info: &BlockChainInfo, io: &mut SyncIo<SyncIoBackend = BC>, peers: &[PeerId]) -> usize {
 		trace!(target: "sync", "Sending NewHashes to {:?}", peers);
 		let last_parent = *io.chain().best_block_header().parent_hash();
 		let best_block_hash = chain_info.best_block_hash;
@@ -114,7 +114,7 @@ impl SyncPropagator {
 	}
 
 	/// propagates new transactions to all peers
-	pub fn propagate_new_transactions<F: FnMut() -> bool>(sync: &mut ChainSync, io: &mut SyncIo, mut should_continue: F) -> usize {
+	pub fn propagate_new_transactions<F: FnMut() -> bool, BC: ClientBackend>(sync: &mut ChainSync, io: &mut SyncIo<SyncIoBackend = BC>, mut should_continue: F) -> usize {
 		// Early out if nobody to send to.
 		if sync.peers.is_empty() {
 			return 0;
@@ -155,9 +155,9 @@ impl SyncPropagator {
 		affected_peers.len()
 	}
 
-	fn propagate_transactions_to_peers<F: FnMut() -> bool>(
+	fn propagate_transactions_to_peers<F: FnMut() -> bool, BC: ClientBackend>(
 		sync: &mut ChainSync,
-		io: &mut SyncIo,
+		io: &mut SyncIo<SyncIoBackend = BC>,
 		peers: Vec<PeerId>,
 		transactions: Vec<&SignedTransaction>,
 		mut should_continue: F,
@@ -174,7 +174,7 @@ impl SyncPropagator {
 		// Clear old transactions from stats
 		sync.transactions_stats.retain(&all_transactions_hashes);
 
-		let send_packet = |io: &mut SyncIo, peer_id: PeerId, sent: usize, rlp: Bytes| {
+		let send_packet = |io: &mut SyncIo<SyncIoBackend = BC>, peer_id: PeerId, sent: usize, rlp: Bytes| {
 			let size = rlp.len();
 			SyncPropagator::send_packet(io, peer_id, TRANSACTIONS_PACKET, rlp);
 			trace!(target: "sync", "{:02} <- Transactions ({} entries; {} bytes)", peer_id, sent, size);
@@ -265,7 +265,7 @@ impl SyncPropagator {
 		sent_to_peers
 	}
 
-	pub fn propagate_latest_blocks(sync: &mut ChainSync, io: &mut SyncIo, sealed: &[H256]) {
+	pub fn propagate_latest_blocks<BC: ClientBackend>(sync: &mut ChainSync, io: &mut SyncIo<SyncIoBackend = BC>, sealed: &[H256]) {
 		let chain_info = io.chain().chain_info();
 		if (((chain_info.best_block_number as i64) - (sync.last_sent_block_number as i64)).abs() as BlockNumber) < MAX_PEER_LAG_PROPAGATION {
 			let peers = sync.get_lagging_peers(&chain_info);
@@ -286,7 +286,7 @@ impl SyncPropagator {
 	}
 
 	/// Distribute valid proposed blocks to subset of current peers.
-	pub fn propagate_proposed_blocks(sync: &mut ChainSync, io: &mut SyncIo, proposed: &[Bytes]) {
+	pub fn propagate_proposed_blocks<BC: ClientBackend>(sync: &mut ChainSync, io: &mut SyncIo<SyncIoBackend = BC>, proposed: &[Bytes]) {
 		let peers = sync.get_consensus_peers();
 		trace!(target: "sync", "Sending proposed blocks to {:?}", peers);
 		for block in proposed {
@@ -301,7 +301,7 @@ impl SyncPropagator {
 	}
 
 	/// Broadcast consensus message to peers.
-	pub fn propagate_consensus_packet(sync: &mut ChainSync, io: &mut SyncIo, packet: Bytes) {
+	pub fn propagate_consensus_packet<BC: ClientBackend>(sync: &mut ChainSync, io: &mut SyncIo<SyncIoBackend = BC>, packet: Bytes) {
 		let lucky_peers = ChainSync::select_random_peers(&sync.get_consensus_peers());
 		trace!(target: "sync", "Sending consensus packet to {:?}", lucky_peers);
 		for peer_id in lucky_peers {
@@ -310,7 +310,7 @@ impl SyncPropagator {
 	}
 
 	/// Broadcast private transaction message to peers.
-	pub fn propagate_private_transaction(sync: &mut ChainSync, io: &mut SyncIo, transaction_hash: H256, packet_id: PacketId, packet: Bytes) {
+	pub fn propagate_private_transaction<BC: ClientBackend>(sync: &mut ChainSync, io: &mut SyncIo<SyncIoBackend = BC>, transaction_hash: H256, packet_id: PacketId, packet: Bytes) {
 		let lucky_peers = ChainSync::select_random_peers(&sync.get_private_transaction_peers(&transaction_hash));
 		trace!(target: "sync", "Sending private transaction packet to {:?}", lucky_peers);
 		for peer_id in lucky_peers {
@@ -337,7 +337,7 @@ impl SyncPropagator {
 	}
 
 	/// Generic packet sender
-	pub fn send_packet(sync: &mut SyncIo, peer_id: PeerId, packet_id: PacketId, packet: Bytes) {
+	pub fn send_packet<BC: ClientBackend>(sync: &mut SyncIo<SyncIoBackend = BC>, peer_id: PeerId, packet_id: PacketId, packet: Bytes) {
 		if let Err(e) = sync.send(peer_id, packet_id, packet) {
 			debug!(target:"sync", "Error sending packet: {:?}", e);
 			sync.disconnect_peer(peer_id);

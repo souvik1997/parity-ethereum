@@ -17,16 +17,16 @@
 use std::collections::HashMap;
 use network::{NetworkContext, PeerId, PacketId, Error, SessionInfo, ProtocolId};
 use bytes::Bytes;
-use ethcore::client::BlockChainClient;
+use ethcore::client::{BlockChainClient, ClientBackend};
 use ethcore::header::BlockNumber;
 use ethcore::snapshot::SnapshotService;
-use ethcore::state_db::StateDB;
 use parking_lot::RwLock;
 
 /// IO interface for the syncing handler.
 /// Provides peer connection management and an interface to the blockchain client.
 // TODO: ratings
 pub trait SyncIo {
+	type SyncIoBackend: ClientBackend;
 	/// Disable a peer
 	fn disable_peer(&mut self, peer_id: PeerId);
 	/// Disconnect peer
@@ -38,7 +38,7 @@ pub trait SyncIo {
 	/// Send a packet to a peer using specified protocol.
 	fn send_protocol(&mut self, protocol: ProtocolId, peer_id: PeerId, packet_id: PacketId, data: Vec<u8>) -> Result<(), Error>;
 	/// Get the blockchain
-	fn chain(&self) -> &BlockChainClient<StateBackend = StateDB>;
+	fn chain(&self) -> &BlockChainClient<StateBackend = Self::SyncIoBackend>;
 	/// Get the snapshot service.
 	fn snapshot_service(&self) -> &SnapshotService;
 	/// Returns peer identifier string
@@ -62,19 +62,19 @@ pub trait SyncIo {
 }
 
 /// Wraps `NetworkContext` and the blockchain client
-pub struct NetSyncIo<'s> {
+pub struct NetSyncIo<'s, BC: ClientBackend> {
 	network: &'s NetworkContext,
-	chain: &'s BlockChainClient<StateBackend = StateDB>,
+	chain: &'s BlockChainClient<StateBackend = BC>,
 	snapshot_service: &'s SnapshotService,
 	chain_overlay: &'s RwLock<HashMap<BlockNumber, Bytes>>,
 }
 
-impl<'s> NetSyncIo<'s> {
+impl<'s, BC: ClientBackend> NetSyncIo<'s, BC> {
 	/// Creates a new instance from the `NetworkContext` and the blockchain client reference.
 	pub fn new(network: &'s NetworkContext,
-		chain: &'s BlockChainClient<StateBackend = StateDB>,
+		chain: &'s BlockChainClient<StateBackend = BC>,
 		snapshot_service: &'s SnapshotService,
-		chain_overlay: &'s RwLock<HashMap<BlockNumber, Bytes>>) -> NetSyncIo<'s> {
+		chain_overlay: &'s RwLock<HashMap<BlockNumber, Bytes>>) -> Self {
 		NetSyncIo {
 			network: network,
 			chain: chain,
@@ -84,7 +84,8 @@ impl<'s> NetSyncIo<'s> {
 	}
 }
 
-impl<'s> SyncIo for NetSyncIo<'s> {
+impl<'s, BC: ClientBackend> SyncIo for NetSyncIo<'s, BC> {
+	type SyncIoBackend = BC;
 	fn disable_peer(&mut self, peer_id: PeerId) {
 		self.network.disable_peer(peer_id);
 	}
@@ -105,7 +106,7 @@ impl<'s> SyncIo for NetSyncIo<'s> {
 		self.network.send_protocol(protocol, peer_id, packet_id, data)
 	}
 
-	fn chain(&self) -> &BlockChainClient<StateBackend = StateDB> {
+	fn chain(&self) -> &BlockChainClient<StateBackend = BC> {
 		self.chain
 	}
 

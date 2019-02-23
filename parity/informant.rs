@@ -15,23 +15,27 @@
 // along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 extern crate ansi_term;
+extern crate rich_phantoms;
 use self::ansi_term::Colour::{White, Yellow, Green, Cyan, Blue};
 use self::ansi_term::{Colour, Style};
 
 use std::sync::{Arc};
 use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Instant, Duration};
+use self::rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 
 use atty;
 use ethcore::client::{
 	BlockId, BlockChainClient, ChainInfo, BlockInfo, BlockChainInfo,
 	BlockQueueInfo, ChainNotify, NewBlocks, ClientReport, Client, ClientIoMessage,
-	ClientBackend
+	ClientBackend, CoreClient
 };
 use ethcore::header::BlockNumber;
 use ethcore::snapshot::{RestorationStatus, SnapshotService as SS};
 use ethcore::snapshot::service::Service as SnapshotService;
 use ethcore::state_db::StateDB;
+use ethcore::state::backend::ProofCheck;
 use sync::{LightSyncProvider, LightSync, SyncProvider, ManageNetwork};
 use io::{TimerToken, IoContext, IoHandler};
 use light::Cache as LightDataCache;
@@ -118,13 +122,28 @@ pub trait InformantData: Send + Sync {
 }
 
 /// Informant data for a full node.
-pub struct FullNodeInformantData {
-	pub client: Arc<Client>,
+pub struct NodeInformantData<BC: ClientBackend> {
+	pub client: Arc<CoreClient<BC>>,
 	pub sync: Option<Arc<SyncProvider>>,
 	pub net: Option<Arc<ManageNetwork>>,
+	_phantom: SafePhantomData<BC>,
 }
 
-impl InformantData for FullNodeInformantData {
+impl<BC: ClientBackend> NodeInformantData<BC> {
+	pub fn new(client: Arc<CoreClient<BC>>, sync: Option<Arc<SyncProvider>>, net: Option<Arc<ManageNetwork>>) -> Self {
+		Self {
+			client,
+			sync,
+			net,
+			_phantom: PhantomData
+		}
+	}
+}
+
+pub type FullNodeInformantData = NodeInformantData<StateDB>;
+pub type StatelessNodeInformantData = NodeInformantData<ProofCheck>;
+
+impl<BC: ClientBackend> InformantData for NodeInformantData<BC> {
 	fn executes_transactions(&self) -> bool { true }
 
 	fn is_major_importing(&self) -> bool {
@@ -216,24 +235,25 @@ impl InformantData for LightNodeInformantData {
 	}
 }
 
-pub struct Informant<T> {
+pub struct Informant<T, BC: ClientBackend> {
 	last_tick: RwLock<Instant>,
 	with_color: bool,
 	target: T,
-	snapshot: Option<Arc<SnapshotService<StateDB>>>,
+	snapshot: Option<Arc<SnapshotService<BC>>>,
 	rpc_stats: Option<Arc<RpcStats>>,
 	last_import: Mutex<Instant>,
 	skipped: AtomicUsize,
 	skipped_txs: AtomicUsize,
 	in_shutdown: AtomicBool,
 	last_report: Mutex<ClientReport>,
+	_phantom: SafePhantomData<BC>,
 }
 
-impl<T: InformantData> Informant<T> {
+impl<T: InformantData, BC: ClientBackend> Informant<T, BC> {
 	/// Make a new instance potentially `with_color` output.
 	pub fn new(
 		target: T,
-		snapshot: Option<Arc<SnapshotService<StateDB>>>,
+		snapshot: Option<Arc<SnapshotService<BC>>>,
 		rpc_stats: Option<Arc<RpcStats>>,
 		with_color: bool,
 	) -> Self {
@@ -248,6 +268,7 @@ impl<T: InformantData> Informant<T> {
 			skipped_txs: AtomicUsize::new(0),
 			in_shutdown: AtomicBool::new(false),
 			last_report: Mutex::new(Default::default()),
+			_phantom: PhantomData
 		}
 	}
 
@@ -365,7 +386,7 @@ impl<T: InformantData> Informant<T> {
 	}
 }
 
-impl ChainNotify for Informant<FullNodeInformantData> {
+impl<BC: ClientBackend> ChainNotify for Informant<NodeInformantData<BC>, BC> {
 	fn new_blocks(&self, new_blocks: NewBlocks) {
 		if new_blocks.has_more_blocks_to_import { return }
 		let mut last_import = self.last_import.lock();
@@ -411,7 +432,7 @@ impl ChainNotify for Informant<FullNodeInformantData> {
 	}
 }
 
-impl LightChainNotify for Informant<LightNodeInformantData> {
+impl LightChainNotify for Informant<LightNodeInformantData, StateDB> {
 	fn new_headers(&self, good: &[H256]) {
 		let mut last_import = self.last_import.lock();
 		let client = &self.target.client;
@@ -440,7 +461,7 @@ impl LightChainNotify for Informant<LightNodeInformantData> {
 
 const INFO_TIMER: TimerToken = 0;
 
-impl<T: InformantData, BC: ClientBackend> IoHandler<ClientIoMessage<BC>> for Informant<T> {
+impl<T: InformantData, BC: ClientBackend> IoHandler<ClientIoMessage<BC>> for Informant<T, BC> {
 	fn initialize(&self, io: &IoContext<ClientIoMessage<BC>>) {
 		io.register_timer(INFO_TIMER, Duration::from_secs(5)).expect("Error registering timer");
 	}

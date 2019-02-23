@@ -19,8 +19,10 @@
 use std::sync::{Arc, Weak};
 use std::net::{SocketAddr, AddrParseError};
 use std::fmt;
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 
-use client::{Client, ImportSealedBlock};
+use client::{CoreClient, ClientBackend, ImportSealedBlock};
 use ethereum_types::{H64, H256, clean_0x, U256};
 use ethash::{self, SeedHashCompute};
 #[cfg(feature = "work-notify")]
@@ -31,7 +33,6 @@ use ethcore_stratum::{
 	JobDispatcher, Stratum as StratumService, Error as StratumServiceError,
 };
 use miner::{Miner, MinerService};
-use state_db::StateDB;
 use parking_lot::Mutex;
 use rlp::encode;
 
@@ -107,13 +108,14 @@ impl fmt::Display for PayloadError {
 }
 
 /// Job dispatcher for stratum service
-pub struct StratumJobDispatcher {
+pub struct StratumJobDispatcher<BC: ClientBackend> {
 	seed_compute: Mutex<SeedHashCompute>,
-	client: Weak<Client>,
-	miner: Weak<Miner<StateDB>>,
+	client: Weak<CoreClient<BC>>,
+	miner: Weak<Miner<BC>>,
+	_phantom: SafePhantomData<BC>,
 }
 
-impl JobDispatcher for StratumJobDispatcher {
+impl<BC: ClientBackend> JobDispatcher for StratumJobDispatcher<BC> {
 	fn initial(&self) -> Option<String> {
 		// initial payload may contain additional data, not in this case
 		self.job()
@@ -154,13 +156,14 @@ impl JobDispatcher for StratumJobDispatcher {
 	}
 }
 
-impl StratumJobDispatcher {
+impl<BC: ClientBackend> StratumJobDispatcher<BC> {
 	/// New stratum job dispatcher given the miner and client
-	fn new(miner: Weak<Miner<StateDB>>, client: Weak<Client>) -> StratumJobDispatcher {
+	fn new(miner: Weak<Miner<BC>>, client: Weak<CoreClient<BC>>) -> Self {
 		StratumJobDispatcher {
 			seed_compute: Mutex::new(SeedHashCompute::default()),
 			client: client,
 			miner: miner,
+			_phantom: PhantomData
 		}
 	}
 
@@ -176,11 +179,11 @@ impl StratumJobDispatcher {
 		)
 	}
 
-	fn with_core<F, R>(&self, f: F) -> Option<R> where F: Fn(Arc<Client>, Arc<Miner<StateDB>>) -> Option<R> {
+	fn with_core<F, R>(&self, f: F) -> Option<R> where F: Fn(Arc<CoreClient<BC>>, Arc<Miner<BC>>) -> Option<R> {
 		self.client.upgrade().and_then(|client| self.miner.upgrade().and_then(|miner| (f)(client, miner)))
 	}
 
-	fn with_core_result<F>(&self, f: F) -> Result<(), StratumServiceError> where F: Fn(Arc<Client>, Arc<Miner<StateDB>>) -> Result<(), StratumServiceError> {
+	fn with_core_result<F>(&self, f: F) -> Result<(), StratumServiceError> where F: Fn(Arc<CoreClient<BC>>, Arc<Miner<BC>>) -> Result<(), StratumServiceError> {
 		match (self.client.upgrade(), self.miner.upgrade()) {
 			(Some(client), Some(miner)) => f(client, miner),
 			_ => Ok(()),
@@ -189,9 +192,10 @@ impl StratumJobDispatcher {
 }
 
 /// Wrapper for dedicated stratum service
-pub struct Stratum {
-	dispatcher: Arc<StratumJobDispatcher>,
+pub struct Stratum<BC: ClientBackend> {
+	dispatcher: Arc<StratumJobDispatcher<BC>>,
 	service: Arc<StratumService>,
+	_phantom: SafePhantomData<BC>,
 }
 
 #[derive(Debug)]
@@ -212,7 +216,7 @@ impl From<AddrParseError> for Error {
 }
 
 #[cfg(feature = "work-notify")]
-impl NotifyWork for Stratum {
+impl<BC: ClientBackend> NotifyWork for Stratum<BC> {
 	fn notify(&self, pow_hash: H256, difficulty: U256, number: u64) {
 		trace!(target: "stratum", "Notify work");
 
@@ -224,10 +228,10 @@ impl NotifyWork for Stratum {
 	}
 }
 
-impl Stratum {
+impl<BC: ClientBackend> Stratum<BC> {
 
 	/// New stratum job dispatcher, given the miner, client and dedicated stratum service
-	pub fn start(options: &Options, miner: Weak<Miner<StateDB>>, client: Weak<Client>) -> Result<Stratum, Error> {
+	pub fn start(options: &Options, miner: Weak<Miner<BC>>, client: Weak<CoreClient<BC>>) -> Result<Stratum<BC>, Error> {
 		use std::net::IpAddr;
 
 		let dispatcher = Arc::new(StratumJobDispatcher::new(miner, client));
@@ -241,12 +245,13 @@ impl Stratum {
 		Ok(Stratum {
 			dispatcher: dispatcher,
 			service: stratum_svc,
+			_phantom: PhantomData,
 		})
 	}
 
 	/// Start STRATUM job dispatcher and register it in the miner
 	#[cfg(feature = "work-notify")]
-	pub fn register(cfg: &Options, miner: Arc<Miner<StateDB>>, client: Weak<Client>) -> Result<(), Error> {
+	pub fn register(cfg: &Options, miner: Arc<Miner<BC>>, client: Weak<CoreClient<BC>>) -> Result<(), Error> {
 		let stratum = Stratum::start(cfg, Arc::downgrade(&miner.clone()), client)?;
 		miner.add_work_listener(Box::new(stratum) as Box<NotifyWork>);
 		Ok(())

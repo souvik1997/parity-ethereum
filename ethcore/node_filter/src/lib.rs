@@ -23,6 +23,9 @@ extern crate ethcore_network_devp2p as devp2p;
 extern crate ethereum_types;
 extern crate lru_cache;
 extern crate parking_lot;
+extern crate rich_phantoms;
+use self::rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 
 #[macro_use]
 extern crate ethabi_derive;
@@ -43,7 +46,6 @@ use lru_cache::LruCache;
 use parking_lot::Mutex;
 
 use ethcore::client::{BlockChainClient, BlockId};
-use ethcore::state_db::StateDB;
 use ethereum_types::{H256, Address};
 use ethabi::FunctionOutputDecoder;
 use network::{ConnectionFilter, ConnectionDirection};
@@ -54,24 +56,26 @@ use_contract!(peer_set, "res/peer_set.json");
 const MAX_CACHE_SIZE: usize = 4096;
 
 /// Connection filter that uses a contract to manage permissions.
-pub struct NodeFilter {
-	client: Weak<BlockChainClient<StateBackend = StateDB>>,
+pub struct NodeFilter<BC: ::ethcore::state::Backend + Clone + 'static> {
+	client: Weak<BlockChainClient<StateBackend = BC>>,
 	contract_address: Address,
 	permission_cache: Mutex<LruCache<(H256, NodeId), bool>>,
+	_phantom: SafePhantomData<BC>,
 }
 
-impl NodeFilter {
+impl<BC: ::ethcore::state::Backend + Clone + 'static> NodeFilter<BC> {
 	/// Create a new instance. Accepts a contract address.
-	pub fn new(client: Weak<BlockChainClient<StateBackend = StateDB>>, contract_address: Address) -> NodeFilter {
-		NodeFilter {
+	pub fn new(client: Weak<BlockChainClient<StateBackend = BC>>, contract_address: Address) -> Self {
+		Self {
 			client,
 			contract_address,
 			permission_cache: Mutex::new(LruCache::new(MAX_CACHE_SIZE)),
+			_phantom: PhantomData,
 		}
 	}
 }
 
-impl ConnectionFilter for NodeFilter {
+impl<BC: ::ethcore::state::Backend + Clone + 'static> ConnectionFilter for NodeFilter<BC> {
 	fn connection_allowed(&self, own_id: &NodeId, connecting_id: &NodeId, _direction: ConnectionDirection) -> bool {
 		let client = match self.client.upgrade() {
 			Some(client) => client,

@@ -15,7 +15,7 @@
 // along with Parity.  If not, see <http://www.gnu.org/licenses/>.
 
 use bytes::Bytes;
-use ethcore::client::BlockId;
+use ethcore::client::{BlockId, ClientBackend};
 use ethcore::header::BlockNumber;
 use ethereum_types::H256;
 use network::{self, PeerId};
@@ -57,7 +57,7 @@ pub struct SyncSupplier;
 
 impl SyncSupplier {
 	/// Dispatch incoming requests and responses
-	pub fn dispatch_packet(sync: &RwLock<ChainSync>, io: &mut SyncIo, peer: PeerId, packet_id: u8, data: &[u8]) {
+	pub fn dispatch_packet<BC: ClientBackend>(sync: &RwLock<ChainSync>, io: &mut SyncIo<SyncIoBackend = BC>, peer: PeerId, packet_id: u8, data: &[u8]) {
 		let rlp = Rlp::new(data);
 
 		let result = match packet_id {
@@ -126,7 +126,7 @@ impl SyncSupplier {
 	}
 
 	/// Respond to GetBlockHeaders request
-	fn return_block_headers(io: &SyncIo, r: &Rlp, peer_id: PeerId) -> RlpResponseResult {
+	fn return_block_headers<BC: ClientBackend>(io: &SyncIo<SyncIoBackend = BC>, r: &Rlp, peer_id: PeerId) -> RlpResponseResult {
 		// Packet layout:
 		// [ block: { P , B_32 }, maxHeaders: P, skip: P, reverse: P in { 0 , 1 } ]
 		let max_headers: usize = r.val_at(1)?;
@@ -202,7 +202,7 @@ impl SyncSupplier {
 	}
 
 	/// Respond to GetBlockBodies request
-	fn return_block_bodies(io: &SyncIo, r: &Rlp, peer_id: PeerId) -> RlpResponseResult {
+	fn return_block_bodies<BC: ClientBackend>(io: &SyncIo<SyncIoBackend = BC>, r: &Rlp, peer_id: PeerId) -> RlpResponseResult {
 		let mut count = r.item_count().unwrap_or(0);
 		if count == 0 {
 			debug!(target: "sync", "Empty GetBlockBodies request, ignoring.");
@@ -224,7 +224,7 @@ impl SyncSupplier {
 	}
 
 	/// Respond to GetNodeData request
-	fn return_node_data(io: &SyncIo, r: &Rlp, peer_id: PeerId) -> RlpResponseResult {
+	fn return_node_data<BC: ClientBackend>(io: &SyncIo<SyncIoBackend = BC>, r: &Rlp, peer_id: PeerId) -> RlpResponseResult {
 		let mut count = r.item_count().unwrap_or(0);
 		trace!(target: "sync", "{} -> GetNodeData: {} entries", peer_id, count);
 		if count == 0 {
@@ -248,7 +248,7 @@ impl SyncSupplier {
 		Ok(Some((NODE_DATA_PACKET, rlp)))
 	}
 
-	fn return_receipts(io: &SyncIo, rlp: &Rlp, peer_id: PeerId) -> RlpResponseResult {
+	fn return_receipts<BC: ClientBackend>(io: &SyncIo<SyncIoBackend = BC>, rlp: &Rlp, peer_id: PeerId) -> RlpResponseResult {
 		let mut count = rlp.item_count().unwrap_or(0);
 		trace!(target: "sync", "{} -> GetReceipts: {} entries", peer_id, count);
 		if count == 0 {
@@ -274,7 +274,7 @@ impl SyncSupplier {
 	}
 
 	/// Respond to GetSnapshotManifest request
-	fn return_snapshot_manifest(io: &SyncIo, r: &Rlp, peer_id: PeerId) -> RlpResponseResult {
+	fn return_snapshot_manifest<BC: ClientBackend>(io: &SyncIo<SyncIoBackend = BC>, r: &Rlp, peer_id: PeerId) -> RlpResponseResult {
 		let count = r.item_count().unwrap_or(0);
 		trace!(target: "warp", "{} -> GetSnapshotManifest", peer_id);
 		if count != 0 {
@@ -297,7 +297,7 @@ impl SyncSupplier {
 	}
 
 	/// Respond to GetSnapshotData request
-	fn return_snapshot_data(io: &SyncIo, r: &Rlp, peer_id: PeerId) -> RlpResponseResult {
+	fn return_snapshot_data<BC: ClientBackend>(io: &SyncIo<SyncIoBackend = BC>, r: &Rlp, peer_id: PeerId) -> RlpResponseResult {
 		let hash: H256 = r.val_at(0)?;
 		trace!(target: "warp", "{} -> GetSnapshotData {:?}", peer_id, hash);
 		let rlp = match io.snapshot_service().chunk(hash) {
@@ -315,8 +315,7 @@ impl SyncSupplier {
 		Ok(Some((SNAPSHOT_DATA_PACKET, rlp)))
 	}
 
-	fn return_rlp<FRlp, FError>(io: &mut SyncIo, rlp: &Rlp, peer: PeerId, rlp_func: FRlp, error_func: FError) -> Result<(), PacketDecodeError>
-		where FRlp : Fn(&SyncIo, &Rlp, PeerId) -> RlpResponseResult,
+	fn return_rlp<FRlp, FError, BC: ClientBackend>(io: &mut SyncIo<SyncIoBackend = BC>, rlp: &Rlp, peer: PeerId, rlp_func: FRlp, error_func: FError) -> Result<(), PacketDecodeError> where FRlp : Fn(&SyncIo<SyncIoBackend = BC>, &Rlp, PeerId) -> RlpResponseResult,
 			FError : FnOnce(network::Error) -> String
 	{
 		let response = rlp_func(io, rlp, peer);

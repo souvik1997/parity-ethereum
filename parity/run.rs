@@ -22,13 +22,14 @@ use std::thread;
 use ansi_term::Colour;
 use bytes::Bytes;
 use ethcore::account_provider::{AccountProvider, AccountProviderSettings};
-use ethcore::client::{BlockId, CallContract, Client, Mode, DatabaseCompactionProfile, VMType, BlockChainClient, BlockInfo};
+use ethcore::client::{BlockId, CallContract, Client, Mode, DatabaseCompactionProfile, VMType, BlockChainClient, BlockInfo, CoreClient, ClientBackend};
 use ethcore::ethstore::ethkey;
 use ethcore::miner::{stratum, Miner, MinerService, MinerOptions};
 use ethcore::snapshot::{self, SnapshotConfiguration};
-use ethcore::spec::{SpecParams, OptimizeFor};
+use ethcore::spec::{SpecParams, OptimizeFor, Spec};
 use ethcore::verification::queue::VerifierSettings;
 use ethcore::state_db::StateDB;
+use ethcore::state::backend::ProofCheck;
 use ethcore_logger::{Config as LogConfig, RotatingLogger};
 use ethcore_service::ClientService;
 use ethereum_types::Address;
@@ -36,7 +37,7 @@ use sync::{self, SyncConfig};
 use miner::work_notify::WorkPoster;
 use futures::IntoFuture;
 use hash_fetch::{self, fetch};
-use informant::{Informant, LightNodeInformantData, FullNodeInformantData};
+use informant::{Informant, LightNodeInformantData, FullNodeInformantData, StatelessNodeInformantData};
 use journaldb::Algorithm;
 use light::Cache as LightDataCache;
 use miner::external::ExternalMiner;
@@ -141,11 +142,14 @@ pub struct RunCmd {
 }
 
 // node info fetcher for the local store.
-struct FullNodeInfo {
-	miner: Option<Arc<Miner<StateDB>>>, // TODO: only TXQ needed, just use that after decoupling.
+struct NodeInfo<BC: ClientBackend> {
+	miner: Option<Arc<Miner<BC>>>, // TODO: only TXQ needed, just use that after decoupling.
 }
 
-impl ::local_store::NodeInfo for FullNodeInfo {
+type FullNodeInfo = NodeInfo<StateDB>;
+type StatelessNodeInfo = NodeInfo<ProofCheck>;
+
+impl<BC: ClientBackend> ::local_store::NodeInfo for NodeInfo<BC> {
 	fn pending_transactions(&self) -> Vec<::transaction::PendingTransaction> {
 		let miner = match self.miner.as_ref() {
 			Some(m) => m,
@@ -354,6 +358,475 @@ fn execute_light_impl(cmd: RunCmd, logger: Arc<RotatingLogger>) -> Result<Runnin
 			informant,
 			client,
 			keep_alive: Box::new((runtime, service, ws_server, http_server, ipc_server)),
+		}
+	})
+}
+
+fn execute_stateless_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq: Cr,
+						on_updater_rq: Rr) -> Result<RunningClient, String>
+	where Cr: Fn(String) + 'static + Send,
+		Rr: Fn() + 'static + Send
+{
+	// load spec
+	let spec: Spec<ProofCheck> = cmd.spec.spec(&cmd.dirs.cache)?;
+
+	// load genesis hash
+	let genesis_hash = spec.genesis_header().hash();
+
+	// database paths
+	let db_dirs = cmd.dirs.database(genesis_hash, cmd.spec.legacy_fork_name(), spec.data_dir.clone());
+
+	// user defaults path
+	let user_defaults_path = db_dirs.user_defaults_path();
+
+	// load user defaults
+	let mut user_defaults = UserDefaults::load(&user_defaults_path)?;
+
+	// select pruning algorithm
+	let algorithm = cmd.pruning.to_algorithm(&user_defaults);
+
+	// check if tracing is on
+	let tracing = tracing_switch_to_bool(cmd.tracing, &user_defaults)?;
+
+	// check if fatdb is on
+	let fat_db = fatdb_switch_to_bool(cmd.fat_db, &user_defaults, algorithm)?;
+
+	// get the mode
+	let mode = mode_switch_to_bool(cmd.mode, &user_defaults)?;
+	trace!(target: "mode", "mode is {:?}", mode);
+	let network_enabled = match mode { Mode::Dark(_) | Mode::Off => false, _ => true, };
+
+	// get the update policy
+	let update_policy = cmd.update_policy;
+
+	// prepare client and snapshot paths.
+	let client_path = db_dirs.client_path(algorithm);
+	let snapshot_path = db_dirs.snapshot_path();
+
+	// execute upgrades
+	execute_upgrades(&cmd.dirs.base, &db_dirs, algorithm, &cmd.compaction)?;
+
+	// create dirs used by parity
+	cmd.dirs.create_dirs(cmd.acc_conf.unlocked_accounts.len() == 0, cmd.secretstore_conf.enabled)?;
+
+	//print out running parity environment
+	print_running_environment(&spec.data_dir, &cmd.dirs, &db_dirs);
+
+	// display info about used pruning algorithm
+	info!("State DB configuration: {}{}{}",
+		Colour::White.bold().paint(algorithm.as_str()),
+		match fat_db {
+			true => Colour::White.bold().paint(" +Fat").to_string(),
+			false => "".to_owned(),
+		},
+		match tracing {
+			true => Colour::White.bold().paint(" +Trace").to_string(),
+			false => "".to_owned(),
+		}
+	);
+	info!("Operating mode: {}", Colour::White.bold().paint(format!("{}", mode)));
+
+	// display warning about using experimental journaldb algorithm
+	if !algorithm.is_stable() {
+		warn!("Your chosen strategy is {}! You can re-run with --pruning to change.", Colour::Red.bold().paint("unstable"));
+	}
+
+	// create sync config
+	let mut sync_config = SyncConfig::default();
+	sync_config.network_id = match cmd.network_id {
+		Some(id) => id,
+		None => spec.network_id(),
+	};
+	if spec.subprotocol_name().len() != 3 {
+		warn!("Your chain specification's subprotocol length is not 3. Ignoring.");
+	} else {
+		sync_config.subprotocol_name.clone_from_slice(spec.subprotocol_name().as_bytes());
+	}
+
+	sync_config.fork_block = spec.fork_block();
+	let mut warp_sync = spec.engine.supports_warp() && cmd.warp_sync;
+	if warp_sync {
+		// Logging is not initialized yet, so we print directly to stderr
+		if fat_db {
+			warn!("Warning: Warp Sync is disabled because Fat DB is turned on.");
+			warp_sync = false;
+		} else if tracing {
+			warn!("Warning: Warp Sync is disabled because tracing is turned on.");
+			warp_sync = false;
+		} else if algorithm != Algorithm::OverlayRecent {
+			warn!("Warning: Warp Sync is disabled because of non-default pruning mode.");
+			warp_sync = false;
+		}
+	}
+	sync_config.warp_sync = match (warp_sync, cmd.warp_barrier) {
+		(true, Some(block)) => sync::WarpSync::OnlyAndAfter(block),
+		(true, _) => sync::WarpSync::Enabled,
+		_ => sync::WarpSync::Disabled,
+	};
+	sync_config.download_old_blocks = cmd.download_old_blocks;
+	sync_config.serve_light = cmd.serve_light;
+
+	let passwords = passwords_from_files(&cmd.acc_conf.password_files)?;
+
+	// Run in daemon mode.
+	// Note, that it should be called before we leave any file descriptor open,
+	// since `daemonize` will close them.
+	if let Some(pid_file) = cmd.daemon {
+		info!("Running as a daemon process!");
+		daemonize(pid_file)?;
+	}
+
+	// prepare account provider
+	let account_provider = Arc::new(prepare_account_provider(&cmd.spec, &cmd.dirs, &spec.data_dir, cmd.acc_conf, &passwords)?);
+
+	// spin up event loop
+	let runtime = Runtime::with_default_thread_count();
+
+	// fetch service
+	let fetch = fetch::Client::new(FETCH_FULL_NUM_DNS_THREADS).map_err(|e| format!("Error starting fetch client: {:?}", e))?;
+
+	let txpool_size = cmd.miner_options.pool_limits.max_count;
+	// create miner
+	let miner = Arc::new(Miner::new(
+		cmd.miner_options,
+		cmd.gas_pricer_conf.to_gas_pricer(fetch.clone(), runtime.executor()),
+		&spec,
+		Some(account_provider.clone()),
+	));
+	miner.set_author(cmd.miner_extras.author, None).expect("Fails only if password is Some; password is None; qed");
+	miner.set_gas_range_target(cmd.miner_extras.gas_range_target);
+	miner.set_extra_data(cmd.miner_extras.extra_data);
+
+	if !cmd.miner_extras.work_notify.is_empty() {
+		miner.add_work_listener(Box::new(
+			WorkPoster::new(&cmd.miner_extras.work_notify, fetch.clone(), runtime.executor())
+		));
+	}
+
+	let engine_signer = cmd.miner_extras.engine_signer;
+	if engine_signer != Default::default() {
+		// Check if engine signer exists
+		if !account_provider.has_account(engine_signer) {
+			return Err(format!("Consensus signer account not found for the current chain. {}", build_create_account_hint(&cmd.spec, &cmd.dirs.keys)));
+		}
+
+		// Check if any passwords have been read from the password file(s)
+		if passwords.is_empty() {
+			return Err(format!("No password found for the consensus signer {}. {}", engine_signer, VERIFY_PASSWORD_HINT));
+		}
+
+		// Attempt to sign in the engine signer.
+		if !passwords.iter().any(|p| miner.set_author(engine_signer, Some(p.to_owned())).is_ok()) {
+			return Err(format!("No valid password for the consensus signer {}. {}", engine_signer, VERIFY_PASSWORD_HINT));
+		}
+	}
+
+	// display warning if using --no-hardcoded-sync
+	if cmd.no_hardcoded_sync {
+		warn!("The --no-hardcoded-sync flag has no effect if you don't use --light");
+	}
+
+	// create client config
+	let mut client_config = to_client_config(
+		&cmd.cache_config,
+		spec.name.to_lowercase(),
+		mode.clone(),
+		tracing,
+		fat_db,
+		cmd.compaction,
+		cmd.vm_type,
+		cmd.name,
+		algorithm,
+		cmd.pruning_history,
+		cmd.pruning_memory,
+		cmd.check_seal,
+		cmd.max_round_blocks_to_import,
+	);
+
+	client_config.queue.verifier_settings = cmd.verifier_settings;
+	client_config.transaction_verification_queue_size = ::std::cmp::max(2048, txpool_size / 4);
+	client_config.snapshot = cmd.snapshot_conf.clone();
+
+	// set up bootnodes
+	let mut net_conf = cmd.net_conf;
+	if !cmd.custom_bootnodes {
+		net_conf.boot_nodes = spec.nodes.clone();
+	}
+
+	// set network path.
+	net_conf.net_config_path = Some(db_dirs.network_path().to_string_lossy().into_owned());
+
+	let restoration_db_handler = db::restoration_db_handler(&client_path, &client_config);
+	let client_db = restoration_db_handler.open(&client_path)
+		.map_err(|e| format!("Failed to open database {:?}", e))?;
+
+	// create client service.
+	let service: ClientService<ProofCheck> = ClientService::start(
+		client_config,
+		&spec,
+		client_db,
+		&snapshot_path,
+		restoration_db_handler,
+		&cmd.dirs.ipc_path(),
+		miner.clone(),
+		account_provider.clone(),
+		Box::new(SecretStoreEncryptor::new(cmd.private_encryptor_conf, fetch.clone()).map_err(|e| e.to_string())?),
+		cmd.private_provider_conf,
+	).map_err(|e| format!("Client service error: {:?}", e))?;
+
+	let connection_filter_address = spec.params().node_permission_contract;
+	// drop the spec to free up genesis state.
+	drop(spec);
+
+	// take handle to client
+	let client = service.client();
+	// Update miners block gas limit
+	miner.update_transaction_queue_limits(*client.best_block_header().gas_limit());
+
+	// take handle to private transactions service
+	let private_tx_service = service.private_tx_service();
+	let private_tx_provider = private_tx_service.provider();
+	let connection_filter = connection_filter_address.map(|a| Arc::new(NodeFilter::new(Arc::downgrade(&client) as Weak<BlockChainClient<StateBackend = ProofCheck>>, a)));
+	let snapshot_service = service.snapshot_service();
+
+	// initialize the local node information store.
+	let store = {
+		let db = service.db();
+		let node_info = StatelessNodeInfo {
+			miner: match cmd.no_persistent_txqueue {
+				true => None,
+				false => Some(miner.clone()),
+			}
+		};
+
+		let store = ::local_store::create(db.key_value().clone(), ::ethcore::db::COL_NODE_INFO, node_info);
+
+		if cmd.no_persistent_txqueue {
+			info!("Running without a persistent transaction queue.");
+
+			if let Err(e) = store.clear() {
+				warn!("Error clearing persistent transaction queue: {}", e);
+			}
+		}
+
+		// re-queue pending transactions.
+		match store.pending_transactions() {
+			Ok(pending) => {
+				for pending_tx in pending {
+					if let Err(e) = miner.import_own_transaction(&*client, pending_tx) {
+						warn!("Error importing saved transaction: {}", e)
+					}
+				}
+			}
+			Err(e) => warn!("Error loading cached pending transactions from disk: {}", e),
+		}
+
+		Arc::new(store)
+	};
+
+	// register it as an IO service to update periodically.
+	service.register_io_handler(store).map_err(|_| "Unable to register local store handler".to_owned())?;
+
+	// create external miner
+	let external_miner = Arc::new(ExternalMiner::default());
+
+	// start stratum
+	if let Some(ref stratum_config) = cmd.stratum {
+		stratum::Stratum::register(stratum_config, miner.clone(), Arc::downgrade(&client))
+			.map_err(|e| format!("Stratum start error: {:?}", e))?;
+	}
+
+	let mut attached_protos = Vec::new();
+
+	let whisper_factory = if cmd.whisper.enabled {
+		let whisper_factory = ::whisper::setup(cmd.whisper.target_message_pool_size, &mut attached_protos)
+			.map_err(|e| format!("Failed to initialize whisper: {}", e))?;
+
+		whisper_factory
+	} else {
+		None
+	};
+
+	// create sync object
+	let (sync_provider, manage_network, chain_notify, priority_tasks) = modules::sync(
+		sync_config,
+		net_conf.clone().into(),
+		client.clone(),
+		snapshot_service.clone(),
+		private_tx_service.clone(),
+		client.clone(),
+		&cmd.logger_config,
+		attached_protos,
+		connection_filter.clone().map(|f| f as Arc<::sync::ConnectionFilter + 'static>),
+	).map_err(|e| format!("Sync error: {}", e))?;
+
+	service.add_notify(chain_notify.clone());
+
+	// Propagate transactions as soon as they are imported.
+	let tx = ::parking_lot::Mutex::new(priority_tasks);
+	let is_ready = Arc::new(atomic::AtomicBool::new(true));
+	miner.add_transactions_listener(Box::new(move |_hashes| {
+		// we want to have only one PendingTransactions task in the queue.
+		if is_ready.compare_and_swap(true, false, atomic::Ordering::SeqCst) {
+			let task = ::sync::PriorityTask::PropagateTransactions(Instant::now(), is_ready.clone());
+			// we ignore error cause it means that we are closing
+			let _ = tx.lock().send(task);
+		}
+	}));
+
+	// provider not added to a notification center is effectively disabled
+	// TODO [debris] refactor it later on
+	if cmd.private_tx_enabled {
+		service.add_notify(private_tx_provider.clone());
+		// TODO [ToDr] PrivateTX should use separate notifications
+		// re-using ChainNotify for this is a bit abusive.
+		private_tx_provider.add_notify(chain_notify.clone());
+	}
+
+	// start network
+	if network_enabled {
+		chain_notify.start();
+	}
+
+	let contract_client = {
+		struct StatelessRegistrar { client: Arc<CoreClient<ProofCheck>> }
+		impl RegistrarClient for StatelessRegistrar {
+			type Call = Asynchronous;
+			fn registrar_address(&self) -> Result<Address, String> {
+				self.client.registrar_address()
+					.ok_or_else(|| "Registrar not defined.".into())
+			}
+			fn call_contract(&self, address: Address, data: Bytes) -> Self::Call {
+				Box::new(self.client.call_contract(BlockId::Latest, address, data).into_future())
+			}
+		}
+
+		Arc::new(StatelessRegistrar { client: client.clone() })
+	};
+
+	// the updater service
+	let updater_fetch = fetch.clone();
+	let updater = Updater::new(
+		&Arc::downgrade(&(service.client() as Arc<BlockChainClient<StateBackend = ProofCheck>>)),
+		&Arc::downgrade(&sync_provider),
+		update_policy,
+		hash_fetch::Client::with_fetch(contract_client.clone(), updater_fetch, runtime.executor())
+	);
+	service.add_notify(updater.clone());
+
+	// set up dependencies for rpc servers
+	let rpc_stats = Arc::new(informant::RpcStats::default());
+	let secret_store = account_provider.clone();
+	let signer_service = Arc::new(signer::new_service(&cmd.ws_conf, &cmd.logger_config));
+
+	let deps_for_rpc_apis = Arc::new(rpc_apis::NodeDependencies {
+		signer_service: signer_service,
+		snapshot: snapshot_service.clone(),
+		client: client.clone(),
+		sync: sync_provider.clone(),
+		net: manage_network.clone(),
+		secret_store: secret_store,
+		miner: miner.clone(),
+		external_miner: external_miner.clone(),
+		logger: logger.clone(),
+		settings: Arc::new(cmd.net_settings.clone()),
+		net_service: manage_network.clone(),
+		updater: updater.clone(),
+		geth_compatibility: cmd.geth_compatibility,
+		experimental_rpcs: cmd.experimental_rpcs,
+		ws_address: cmd.ws_conf.address(),
+		fetch: fetch.clone(),
+		executor: runtime.executor(),
+		whisper_rpc: whisper_factory,
+		private_tx_service: Some(private_tx_service.clone()),
+		gas_price_percentile: cmd.gas_price_percentile,
+		poll_lifetime: cmd.poll_lifetime,
+	});
+
+	let dependencies = rpc::Dependencies {
+		apis: deps_for_rpc_apis.clone(),
+		executor: runtime.executor(),
+		stats: rpc_stats.clone(),
+	};
+
+	// start rpc servers
+	let rpc_direct = rpc::setup_apis(rpc_apis::ApiSet::All, &dependencies);
+	let ws_server = rpc::new_ws(cmd.ws_conf.clone(), &dependencies)?;
+	let ipc_server = rpc::new_ipc(cmd.ipc_conf, &dependencies)?;
+	let http_server = rpc::new_http("HTTP JSON-RPC", "jsonrpc", cmd.http_conf.clone(), &dependencies)?;
+
+	// secret store key server
+	let secretstore_deps = secretstore::Dependencies {
+		client: client.clone(),
+		sync: sync_provider.clone(),
+		miner: miner.clone(),
+		account_provider: account_provider,
+		accounts_passwords: &passwords,
+	};
+	let secretstore_key_server = secretstore::start(cmd.secretstore_conf.clone(), secretstore_deps)?;
+
+	// the ipfs server
+	let ipfs_server = ipfs::start_server(cmd.ipfs_conf.clone(), client.clone())?;
+
+	// the informant
+	let informant = Arc::new(Informant::new(
+		StatelessNodeInformantData::new(
+			service.client(),
+			Some(sync_provider.clone()),
+			Some(manage_network.clone()),
+		),
+		Some(snapshot_service.clone()),
+		Some(rpc_stats.clone()),
+		cmd.logger_config.color,
+	));
+	service.add_notify(informant.clone());
+	service.register_io_handler(informant.clone()).map_err(|_| "Unable to register informant handler".to_owned())?;
+
+	// save user defaults
+	user_defaults.is_first_launch = false;
+	user_defaults.pruning = algorithm;
+	user_defaults.tracing = tracing;
+	user_defaults.fat_db = fat_db;
+	user_defaults.set_mode(mode);
+	user_defaults.save(&user_defaults_path)?;
+
+	// tell client how to save the default mode if it gets changed.
+	client.on_user_defaults_change(move |mode: Option<Mode>| {
+		if let Some(mode) = mode {
+			user_defaults.set_mode(mode);
+		}
+		let _ = user_defaults.save(&user_defaults_path);	// discard failures - there's nothing we can do
+	});
+
+	// the watcher must be kept alive.
+	let watcher = match cmd.snapshot_conf.no_periodic {
+		true => None,
+		false => {
+			let sync = sync_provider.clone();
+			let client = client.clone();
+			let watcher = Arc::new(snapshot::Watcher::new(
+				service.client(),
+				move || is_major_importing(Some(sync.status().state), client.queue_info()),
+				service.io().channel(),
+				SNAPSHOT_PERIOD,
+				SNAPSHOT_HISTORY,
+			));
+
+			service.add_notify(watcher.clone());
+			Some(watcher)
+		},
+	};
+
+	client.set_exit_handler(on_client_rq);
+	updater.set_exit_handler(on_updater_rq);
+
+	Ok(RunningClient {
+		inner: RunningClientInner::Stateless {
+			rpc: rpc_direct,
+			informant,
+			client,
+			client_service: Arc::new(service),
+			keep_alive: Box::new((watcher, updater, ws_server, http_server, ipc_server, secretstore_key_server, ipfs_server, runtime)),
 		}
 	})
 }
@@ -715,7 +1188,7 @@ fn execute_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq: 
 	let secret_store = account_provider.clone();
 	let signer_service = Arc::new(signer::new_service(&cmd.ws_conf, &cmd.logger_config));
 
-	let deps_for_rpc_apis = Arc::new(rpc_apis::FullDependencies {
+	let deps_for_rpc_apis = Arc::new(rpc_apis::NodeDependencies {
 		signer_service: signer_service,
 		snapshot: snapshot_service.clone(),
 		client: client.clone(),
@@ -766,11 +1239,11 @@ fn execute_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq: 
 
 	// the informant
 	let informant = Arc::new(Informant::new(
-		FullNodeInformantData {
-			client: service.client(),
-			sync: Some(sync_provider.clone()),
-			net: Some(manage_network.clone()),
-		},
+		FullNodeInformantData::new(
+			service.client(),
+			Some(sync_provider.clone()),
+			Some(manage_network.clone()),
+		),
 		Some(snapshot_service.clone()),
 		Some(rpc_stats.clone()),
 		cmd.logger_config.color,
@@ -838,15 +1311,22 @@ pub struct RunningClient {
 enum RunningClientInner {
 	Light {
 		rpc: jsonrpc_core::MetaIoHandler<Metadata, informant::Middleware<rpc_apis::LightClientNotifier>>,
-		informant: Arc<Informant<LightNodeInformantData>>,
+		informant: Arc<Informant<LightNodeInformantData, StateDB>>,
 		client: Arc<LightClient>,
 		keep_alive: Box<Any>,
 	},
 	Full {
-		rpc: jsonrpc_core::MetaIoHandler<Metadata, informant::Middleware<informant::ClientNotifier>>,
-		informant: Arc<Informant<FullNodeInformantData>>,
+		rpc: jsonrpc_core::MetaIoHandler<Metadata, informant::Middleware<informant::ClientNotifier<StateDB>>>,
+		informant: Arc<Informant<FullNodeInformantData, StateDB>>,
 		client: Arc<Client>,
 		client_service: Arc<ClientService<StateDB>>,
+		keep_alive: Box<Any>,
+	},
+	Stateless {
+		rpc: jsonrpc_core::MetaIoHandler<Metadata, informant::Middleware<informant::ClientNotifier<ProofCheck>>>,
+		informant: Arc<Informant<StatelessNodeInformantData, ProofCheck>>,
+		client: Arc<CoreClient<ProofCheck>>,
+		client_service: Arc<ClientService<ProofCheck>>,
 		keep_alive: Box<Any>,
 	},
 }
@@ -867,6 +1347,9 @@ impl RunningClient {
 			RunningClientInner::Full { ref rpc, .. } => {
 				rpc.handle_request_sync(request, metadata)
 			},
+			RunningClientInner::Stateless { ref rpc, .. } => {
+				rpc.handle_request_sync(request, metadata)
+			},
 		}
 	}
 
@@ -885,6 +1368,24 @@ impl RunningClient {
 				wait_for_drop(weak_client);
 			},
 			RunningClientInner::Full { rpc, informant, client, client_service, keep_alive } => {
+				info!("Finishing work, please wait...");
+				// Create a weak reference to the client so that we can wait on shutdown
+				// until it is dropped
+				let weak_client = Arc::downgrade(&client);
+				// Shutdown and drop the ServiceClient
+				client_service.shutdown();
+				drop(client_service);
+				// drop this stuff as soon as exit detected.
+				drop(rpc);
+				drop(keep_alive);
+				// to make sure timer does not spawn requests while shutdown is in progress
+				informant.shutdown();
+				// just Arc is dropping here, to allow other reference release in its default time
+				drop(informant);
+				drop(client);
+				wait_for_drop(weak_client);
+			}
+			RunningClientInner::Stateless { rpc, informant, client, client_service, keep_alive } => {
 				info!("Finishing work, please wait...");
 				// Create a weak reference to the client so that we can wait on shutdown
 				// until it is dropped

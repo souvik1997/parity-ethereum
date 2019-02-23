@@ -19,6 +19,8 @@ use std::collections::{HashMap, BTreeMap};
 use std::io;
 use std::ops::Range;
 use std::time::Duration;
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 use bytes::Bytes;
 use devp2p::NetworkService;
 use network::{NetworkProtocolHandler, NetworkContext, PeerId, ProtocolId,
@@ -29,10 +31,9 @@ use types::pruning_info::PruningInfo;
 use ethereum_types::{H256, H512, U256};
 use io::{TimerToken};
 use ethcore::ethstore::ethkey::Secret;
-use ethcore::client::{BlockChainClient, ChainNotify, NewBlocks, ChainMessageType};
+use ethcore::client::{BlockChainClient, ChainNotify, NewBlocks, ChainMessageType, ClientBackend};
 use ethcore::snapshot::SnapshotService;
 use ethcore::header::BlockNumber;
-use ethcore::state_db::StateDB;
 use sync_io::NetSyncIo;
 use chain::{ChainSyncApi, SyncStatus as EthSyncStatus};
 use std::net::{SocketAddr, AddrParseError};
@@ -261,11 +262,11 @@ impl PriorityTask {
 }
 
 /// EthSync initialization parameters.
-pub struct Params {
+pub struct Params<BC: ClientBackend> {
 	/// Configuration.
 	pub config: SyncConfig,
 	/// Blockchain client.
-	pub chain: Arc<BlockChainClient<StateBackend = StateDB>>,
+	pub chain: Arc<BlockChainClient<StateBackend = BC>>,
 	/// Snapshot service.
 	pub snapshot_service: Arc<SnapshotService>,
 	/// Private tx service.
@@ -276,14 +277,30 @@ pub struct Params {
 	pub network_config: NetworkConfiguration,
 	/// Other protocols to attach.
 	pub attached_protos: Vec<AttachedProtocol>,
+	_phantom: SafePhantomData<BC>,
+}
+
+impl<BC: ClientBackend> Params<BC> {
+	pub fn new(config: SyncConfig, chain: Arc<BlockChainClient<StateBackend = BC>>, snapshot_service: Arc<SnapshotService>, private_tx_handler: Arc<PrivateTxHandler>, provider: Arc<::light::Provider>, network_config: NetworkConfiguration, attached_protos: Vec<AttachedProtocol>) -> Self {
+		Params {
+			config,
+			chain,
+			snapshot_service,
+			private_tx_handler,
+			provider,
+			network_config,
+			attached_protos,
+			_phantom: PhantomData
+		}
+	}
 }
 
 /// Ethereum network protocol handler
-pub struct EthSync {
+pub struct EthSync<BC: ClientBackend> {
 	/// Network service
 	network: NetworkService,
 	/// Main (eth/par) protocol handler
-	eth_handler: Arc<SyncProtocolHandler>,
+	eth_handler: Arc<SyncProtocolHandler<BC>>,
 	/// Light (pip) protocol handler
 	light_proto: Option<Arc<LightProtocol>>,
 	/// Other protocols to attach.
@@ -294,6 +311,7 @@ pub struct EthSync {
 	light_subprotocol_name: [u8; 3],
 	/// Priority tasks notification channel
 	priority_tasks: Mutex<mpsc::Sender<PriorityTask>>,
+	_phantom: SafePhantomData<BC>,
 }
 
 fn light_params(
@@ -318,9 +336,9 @@ fn light_params(
 	light_params
 }
 
-impl EthSync {
+impl<BC: ClientBackend> EthSync<BC> {
 	/// Creates and register protocol with the network service
-	pub fn new(params: Params, connection_filter: Option<Arc<ConnectionFilter>>) -> Result<Arc<EthSync>, Error> {
+	pub fn new(params: Params<BC>, connection_filter: Option<Arc<ConnectionFilter>>) -> Result<Arc<Self>, Error> {
 		let pruning_info = params.chain.pruning_info();
 		let light_proto = match params.config.serve_light {
 			false => None,
@@ -340,7 +358,7 @@ impl EthSync {
 				);
 
 				let mut light_proto = LightProtocol::new(params.provider, light_params);
-				light_proto.add_handler(Arc::new(TxRelay(params.chain.clone())));
+				light_proto.add_handler(Arc::new(TxRelay::new(params.chain.clone())));
 
 				Arc::new(light_proto)
 			})
@@ -362,12 +380,14 @@ impl EthSync {
 				chain: params.chain,
 				snapshot_service: params.snapshot_service,
 				overlay: RwLock::new(HashMap::new()),
+				_phantom: PhantomData,
 			}),
 			light_proto: light_proto,
 			subprotocol_name: params.config.subprotocol_name,
 			light_subprotocol_name: params.config.light_subprotocol_name,
 			attached_protos: params.attached_protos,
 			priority_tasks: Mutex::new(priority_tasks_tx),
+			_phantom: PhantomData,
 		});
 
 		Ok(sync)
@@ -379,7 +399,7 @@ impl EthSync {
 	}
 }
 
-impl SyncProvider for EthSync {
+impl<BC: ClientBackend> SyncProvider for EthSync<BC> {
 	/// Get sync status
 	fn status(&self) -> EthSyncStatus {
 		self.eth_handler.sync.status()
@@ -428,18 +448,19 @@ const PRIORITY_TIMER: TimerToken = 4;
 
 pub(crate) const PRIORITY_TIMER_INTERVAL: Duration = Duration::from_millis(250);
 
-struct SyncProtocolHandler {
+struct SyncProtocolHandler<BC: ClientBackend> {
 	/// Shared blockchain client.
-	chain: Arc<BlockChainClient<StateBackend = StateDB>>,
+	chain: Arc<BlockChainClient<StateBackend = BC>>,
 	/// Shared snapshot service.
 	snapshot_service: Arc<SnapshotService>,
 	/// Sync strategy
 	sync: ChainSyncApi,
 	/// Chain overlay used to cache data such as fork block.
 	overlay: RwLock<HashMap<BlockNumber, Bytes>>,
+	_phantom: SafePhantomData<BC>,
 }
 
-impl NetworkProtocolHandler for SyncProtocolHandler {
+impl<BC: ClientBackend> NetworkProtocolHandler for SyncProtocolHandler<BC> {
 	fn initialize(&self, io: &NetworkContext) {
 		if io.subprotocol_name() != WARP_SYNC_PROTOCOL_ID {
 			io.register_timer(PEERS_TIMER, Duration::from_millis(700)).expect("Error registering peers timer");
@@ -486,7 +507,7 @@ impl NetworkProtocolHandler for SyncProtocolHandler {
 	}
 }
 
-impl ChainNotify for EthSync {
+impl<BC: ClientBackend> ChainNotify for EthSync<BC> {
 	fn block_pre_import(&self, bytes: &Bytes, hash: &H256, difficulty: &U256) {
 		let task = PriorityTask::PropagateBlock {
 			started: ::std::time::Instant::now(),
@@ -592,12 +613,21 @@ impl ChainNotify for EthSync {
 
 /// PIP event handler.
 /// Simply queues transactions from light client peers.
-struct TxRelay(Arc<BlockChainClient<StateBackend = StateDB>>);
+struct TxRelay<BC: ClientBackend> { chain: Arc<BlockChainClient<StateBackend = BC>>, _phantom: SafePhantomData<BC> }
 
-impl LightHandler for TxRelay {
+impl<BC: ClientBackend> TxRelay<BC> {
+	pub fn new(chain: Arc<BlockChainClient<StateBackend = BC>>) -> Self {
+		Self {
+			chain: chain,
+			_phantom: PhantomData,
+		}
+	}
+}
+
+impl<BC: ClientBackend> LightHandler for TxRelay<BC> {
 	fn on_transactions(&self, ctx: &EventContext, relay: &[::transaction::UnverifiedTransaction]) {
 		trace!(target: "pip", "Relaying {} transactions from peer {}", relay.len(), ctx.peer());
-		self.0.queue_transactions(relay.iter().map(|tx| ::rlp::encode(tx)).collect(), ctx.peer())
+		self.chain.queue_transactions(relay.iter().map(|tx| ::rlp::encode(tx)).collect(), ctx.peer())
 	}
 }
 
@@ -623,7 +653,7 @@ pub trait ManageNetwork : Send + Sync {
 	fn with_proto_context(&self, proto: ProtocolId, f: &mut FnMut(&NetworkContext));
 }
 
-impl ManageNetwork for EthSync {
+impl<BC: ClientBackend> ManageNetwork for EthSync<BC> {
 	fn accept_unreserved_peers(&self) {
 		self.network.set_non_reserved_mode(NonReservedPeerMode::Accept);
 	}

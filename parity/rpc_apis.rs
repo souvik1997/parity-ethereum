@@ -23,7 +23,7 @@ pub use parity_rpc::signer::SignerService;
 
 use ethcore_service::PrivateTxService;
 use ethcore::account_provider::AccountProvider;
-use ethcore::client::Client;
+use ethcore::client::{CoreClient, ClientBackend};
 use ethcore::miner::Miner;
 use ethcore::snapshot::SnapshotService;
 use ethcore::state_db::StateDB;
@@ -214,20 +214,20 @@ pub trait Dependencies {
 }
 
 /// RPC dependencies for a full node.
-pub struct FullDependencies {
+pub struct NodeDependencies<BC: ClientBackend> {
 	pub signer_service: Arc<SignerService>,
-	pub client: Arc<Client>,
+	pub client: Arc<CoreClient<BC>>,
 	pub snapshot: Arc<SnapshotService>,
 	pub sync: Arc<SyncProvider>,
 	pub net: Arc<ManageNetwork>,
 	pub secret_store: Arc<AccountProvider>,
-	pub private_tx_service: Option<Arc<PrivateTxService<StateDB>>>,
-	pub miner: Arc<Miner<StateDB>>,
+	pub private_tx_service: Option<Arc<PrivateTxService<BC>>>,
+	pub miner: Arc<Miner<BC>>,
 	pub external_miner: Arc<ExternalMiner>,
 	pub logger: Arc<RotatingLogger>,
 	pub settings: Arc<NetworkSettings>,
 	pub net_service: Arc<ManageNetwork>,
-	pub updater: Arc<Updater>,
+	pub updater: Arc<Updater<BC>>,
 	pub geth_compatibility: bool,
 	pub experimental_rpcs: bool,
 	pub ws_address: Option<Host>,
@@ -238,7 +238,7 @@ pub struct FullDependencies {
 	pub poll_lifetime: u32,
 }
 
-impl FullDependencies {
+impl<BC: ClientBackend> NodeDependencies<BC> {
 	fn extend_api<S>(
 		&self,
 		handler: &mut MetaIoHandler<Metadata, S>,
@@ -400,10 +400,10 @@ impl FullDependencies {
 	}
 }
 
-impl Dependencies for FullDependencies {
-	type Notifier = ClientNotifier;
+impl<BC: ClientBackend> Dependencies for NodeDependencies<BC> {
+	type Notifier = ClientNotifier<BC>;
 
-	fn activity_notifier(&self) -> ClientNotifier {
+	fn activity_notifier(&self) -> ClientNotifier<BC> {
 		ClientNotifier {
 			client: self.client.clone(),
 		}

@@ -82,6 +82,7 @@ impl<'p, C> Drop for TestIo<'p, C> where C: FlushingBlockChainClient, C: 'p {
 }
 
 impl<'p, C> SyncIo for TestIo<'p, C> where C: FlushingBlockChainClient, C: 'p, C: BlockChainClient<StateBackend = StateDB> {
+	type SyncIoBackend = StateDB;
 	fn disable_peer(&mut self, peer_id: PeerId) {
 		self.disconnect_peer(peer_id);
 	}

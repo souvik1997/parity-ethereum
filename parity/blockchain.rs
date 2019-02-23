@@ -32,6 +32,7 @@ use ethcore::miner::Miner;
 use ethcore::verification::queue::VerifierSettings;
 use ethcore::verification::queue::kind::blocks::Unverified;
 use ethcore::state_db::StateDB;
+use ethcore::spec::Spec;
 use ethcore_service::ClientService;
 use cache::CacheConfig;
 use informant::{Informant, FullNodeInformantData, MillisecondDuration};
@@ -311,7 +312,7 @@ fn execute_import(cmd: ImportBlockchain) -> Result<(), String> {
 	let timer = Instant::now();
 
 	// load spec file
-	let spec = cmd.spec.spec(&cmd.dirs.cache)?;
+	let spec: Spec<StateDB> = cmd.spec.spec(&cmd.dirs.cache)?;
 
 	// load genesis hash
 	let genesis_hash = spec.genesis_header().hash();
@@ -410,11 +411,11 @@ fn execute_import(cmd: ImportBlockchain) -> Result<(), String> {
 	};
 
 	let informant = Arc::new(Informant::new(
-		FullNodeInformantData {
-			client: client.clone(),
-			sync: None,
-			net: None,
-		},
+		FullNodeInformantData::new(
+			client.clone(),
+			None,
+			None,
+		),
 		None,
 		None,
 		cmd.with_color,
@@ -711,7 +712,7 @@ fn execute_export_state(cmd: ExportState) -> Result<(), String> {
 }
 
 pub fn kill_db(cmd: KillBlockchain) -> Result<(), String> {
-	let spec = cmd.spec.spec(&cmd.dirs.cache)?;
+	let spec: Spec<StateDB> = cmd.spec.spec(&cmd.dirs.cache)?;
 	let genesis_hash = spec.genesis_header().hash();
 	let db_dirs = cmd.dirs.database(genesis_hash, None, spec.data_dir);
 	let user_defaults_path = db_dirs.user_defaults_path();

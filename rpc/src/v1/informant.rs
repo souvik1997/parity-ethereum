@@ -26,6 +26,8 @@ use jsonrpc_core::futures::future::Either;
 use order_stat;
 use parking_lot::RwLock;
 
+use ethcore::client::{ClientBackend, CoreClient};
+
 pub use self::parity_runtime::Executor;
 
 const RATE_SECONDS: usize = 10;
@@ -184,7 +186,7 @@ pub trait ActivityNotifier: Send + Sync + 'static {
 }
 
 /// Stats-counting RPC middleware
-pub struct Middleware<T: ActivityNotifier = ClientNotifier> {
+pub struct Middleware<T: ActivityNotifier> {
 	stats: Arc<RpcStats>,
 	notifier: T,
 }
@@ -236,12 +238,12 @@ impl<M: core::Metadata, T: ActivityNotifier> core::Middleware<M> for Middleware<
 }
 
 /// Client Notifier
-pub struct ClientNotifier {
+pub struct ClientNotifier<BC: ClientBackend> {
 	/// Client
-	pub client: Arc<::ethcore::client::Client>,
+	pub client: Arc<CoreClient<BC>>,
 }
 
-impl ActivityNotifier for ClientNotifier {
+impl<BC: ClientBackend> ActivityNotifier for ClientNotifier<BC> {
 	fn active(&self) {
 		self.client.keep_alive()
 	}

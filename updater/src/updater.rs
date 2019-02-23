@@ -26,9 +26,8 @@ use rand::{self, Rng};
 use target_info::Target;
 
 use ethcore::BlockNumber;
-use ethcore::client::{BlockId, BlockChainClient, ChainNotify, NewBlocks};
+use ethcore::client::{BlockId, BlockChainClient, ChainNotify, NewBlocks, ClientBackend};
 use ethcore::filter::Filter;
-use ethcore::state_db::StateDB;
 use ethereum_types::H256;
 use hash_fetch::{self as fetch, HashFetch};
 use parity_path::restrict_permissions_owner;
@@ -137,11 +136,11 @@ struct UpdaterState {
 }
 
 /// Service for checking for updates and determining whether we can achieve consensus.
-pub struct Updater<O = OperationsContractClient, F = fetch::Client, T = StdTimeProvider, R = ThreadRngGenRange> {
+pub struct Updater<BC: ClientBackend, O = OperationsContractClient<BC>, F = fetch::Client, T = StdTimeProvider, R = ThreadRngGenRange> {
 	// Useful environmental stuff.
 	update_policy: UpdatePolicy,
-	weak_self: Mutex<Weak<Updater<O, F, T, R>>>,
-	client: Weak<BlockChainClient<StateBackend = StateDB>>,
+	weak_self: Mutex<Weak<Updater<BC, O, F, T, R>>>,
+	client: Weak<BlockChainClient<StateBackend = BC>>,
 	sync: Option<Weak<SyncProvider>>,
 	fetcher: F,
 	operations_client: O,
@@ -192,12 +191,12 @@ pub trait OperationsClient: Send + Sync + 'static {
 }
 
 /// `OperationsClient` that delegates calls to the operations contract.
-pub struct OperationsContractClient {
-	client: Weak<BlockChainClient<StateBackend = StateDB>>,
+pub struct OperationsContractClient<BC: ClientBackend> {
+	client: Weak<BlockChainClient<StateBackend = BC>>,
 }
 
-impl OperationsContractClient {
-	fn new(client: Weak<BlockChainClient<StateBackend = StateDB>>) -> Self {
+impl<BC: ClientBackend> OperationsContractClient<BC> {
+	fn new(client: Weak<BlockChainClient<StateBackend = BC>>) -> Self {
 		OperationsContractClient {
 			client
 		}
@@ -232,7 +231,7 @@ impl OperationsContractClient {
 	}
 }
 
-impl OperationsClient for OperationsContractClient {
+impl<BC: ClientBackend> OperationsClient for OperationsContractClient<BC> {
 	fn latest(&self, this: &VersionInfo, track: ReleaseTrack) -> Result<OperationsInfo, String> {
 		if track == ReleaseTrack::Unknown {
 			return Err(format!("Current executable ({}) is unreleased.", this.hash));
@@ -353,14 +352,14 @@ impl GenRange for ThreadRngGenRange {
 	}
 }
 
-impl Updater {
+impl<BC: ClientBackend> Updater<BC> {
 	/// `Updater` constructor
 	pub fn new(
-		client: &Weak<BlockChainClient<StateBackend = StateDB>>,
+		client: &Weak<BlockChainClient<StateBackend = BC>>,
 		sync: &Weak<SyncProvider>,
 		update_policy: UpdatePolicy,
 		fetcher: fetch::Client,
-	) -> Arc<Updater> {
+	) -> Arc<Self> {
 		let r = Arc::new(Updater {
 			update_policy,
 			weak_self: Mutex::new(Default::default()),
@@ -394,7 +393,7 @@ impl Updater {
 	}
 }
 
-impl<O: OperationsClient, F: HashFetch, T: TimeProvider, R: GenRange> Updater<O, F, T, R> {
+impl<O: OperationsClient, F: HashFetch, T: TimeProvider, R: GenRange, BC: ClientBackend> Updater<BC, O, F, T, R> {
 	/// Set a closure to call when we want to restart the client
 	pub fn set_exit_handler<G>(&self, g: G) where G: Fn() + 'static + Send {
 		*self.exit_handler.lock() = Some(Box::new(g));
@@ -428,7 +427,7 @@ impl<O: OperationsClient, F: HashFetch, T: TimeProvider, R: GenRange> Updater<O,
 				// We've successfully fetched the binary
 				Ok(path) => {
 					let setup = |path: &Path| -> Result<(), String> {
-						let dest = self.updates_path(&Updater::update_file_name(&release.version));
+						let dest = self.updates_path(&Updater::<::ethcore::state_db::StateDB>::update_file_name(&release.version));
 						if !dest.exists() {
 							info!(target: "updater", "Fetched latest version ({}) OK to {}", release.version, path.display());
 							fs::create_dir_all(dest.parent().expect("at least one thing pushed; qed")).map_err(|e| format!("Unable to create updates path: {:?}", e))?;
@@ -466,7 +465,7 @@ impl<O: OperationsClient, F: HashFetch, T: TimeProvider, R: GenRange> Updater<O,
 
 	fn execute_upgrade(&self, mut state: MutexGuard<UpdaterState>) -> bool {
 		if let UpdaterStatus::Ready { ref release } = state.status.clone() {
-			let file = Updater::update_file_name(&release.version);
+			let file = Updater::<::ethcore::state_db::StateDB>::update_file_name(&release.version);
 			let path = self.updates_path("latest");
 
 			// TODO: creating then writing is a bit fragile. would be nice to make it atomic.
@@ -561,7 +560,7 @@ impl<O: OperationsClient, F: HashFetch, T: TimeProvider, R: GenRange> Updater<O,
 							return;
 						}
 
-						let path = self.updates_path(&Updater::update_file_name(&latest.track.version));
+						let path = self.updates_path(&Updater::<::ethcore::state_db::StateDB>::update_file_name(&latest.track.version));
 						if path.exists() {
 							info!(target: "updater", "Already fetched binary.");
 							state.status = UpdaterStatus::Ready { release: latest.track.clone() };
@@ -668,7 +667,7 @@ impl<O: OperationsClient, F: HashFetch, T: TimeProvider, R: GenRange> Updater<O,
 	}
 }
 
-impl ChainNotify for Updater {
+impl<BC: ClientBackend> ChainNotify for Updater<BC> {
 	fn new_blocks(&self, new_blocks: NewBlocks) {
 		if new_blocks.has_more_blocks_to_import { return }
 		match (self.client.upgrade(), self.sync.as_ref().and_then(Weak::upgrade)) {
@@ -678,7 +677,7 @@ impl ChainNotify for Updater {
 	}
 }
 
-impl<O: OperationsClient, F: HashFetch, T: TimeProvider, R: GenRange> Service for Updater<O, F, T, R> {
+impl<O: OperationsClient, F: HashFetch, T: TimeProvider, R: GenRange, BC: ClientBackend> Service for Updater<BC, O, F, T, R> {
 	fn capability(&self) -> CapState {
 		self.state.lock().capability
 	}
@@ -807,7 +806,7 @@ pub mod tests {
 		}
 	}
 
-	type TestUpdater = Updater<FakeOperationsClient, FakeFetch, FakeTimeProvider, FakeGenRange>;
+	type TestUpdater = Updater<::ethcore::state_db::StateDB, FakeOperationsClient, FakeFetch, FakeTimeProvider, FakeGenRange>;
 
 	fn setup(update_policy: UpdatePolicy) -> (
 		Arc<TestBlockChainClient>,
@@ -935,7 +934,7 @@ pub mod tests {
 		assert_eq!(updater.state.lock().status, UpdaterStatus::Installed { release: latest_release });
 
 		// the final binary should exist in the updates folder and the 'latest' file should be updated to point to it
-		let updated_binary = tempdir.path().join(Updater::update_file_name(&latest_version));
+		let updated_binary = tempdir.path().join(Updater::<::ethcore::state_db::StateDB>::update_file_name(&latest_version));
 		let latest_file = tempdir.path().join("latest");
 
 		assert!(updated_binary.exists());
@@ -1115,7 +1114,7 @@ pub mod tests {
 		operations_client.set_result(Some(latest.clone()), None);
 
 		// mock final update file
-		let update_file = tempdir.path().join(Updater::update_file_name(&latest_version));
+		let update_file = tempdir.path().join(Updater::<::ethcore::state_db::StateDB>::update_file_name(&latest_version));
 		File::create(update_file.clone()).unwrap();
 
 		updater.poll();
@@ -1208,7 +1207,7 @@ pub mod tests {
 		assert_eq!(updater.state.lock().status, UpdaterStatus::Installed { release: latest_release });
 
 		// the final binary should exist in the updates folder and the 'latest' file should be updated to point to it
-		let updated_binary = tempdir.path().join(Updater::update_file_name(&latest_version));
+		let updated_binary = tempdir.path().join(Updater::<::ethcore::state_db::StateDB>::update_file_name(&latest_version));
 		let latest_file = tempdir.path().join("latest");
 
 		assert!(updated_binary.exists());

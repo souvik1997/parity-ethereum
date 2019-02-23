@@ -34,8 +34,7 @@ use std::net::{SocketAddr, IpAddr};
 
 use core::futures::future::{self, FutureResult};
 use core::futures::{self, Future};
-use ethcore::client::BlockChainClient;
-use ethcore::state_db::StateDB;
+use ethcore::client::{BlockChainClient, ClientBackend};
 use http::hyper::{self, server, Method, StatusCode, Body,
 	header::{self, HeaderValue},
 };
@@ -46,21 +45,21 @@ use route::Out;
 pub use http::{AccessControlAllowOrigin, Host, DomainsValidation};
 
 /// Request/response handler
-pub struct IpfsHandler {
+pub struct IpfsHandler<BC: ClientBackend> {
 	/// Allowed CORS domains
 	cors_domains: Option<Vec<AccessControlAllowOrigin>>,
 	/// Hostnames allowed in the `Host` request header
 	allowed_hosts: Option<Vec<Host>>,
 	/// Reference to the Blockchain Client
-	client: Arc<BlockChainClient<StateBackend = StateDB>>,
+	client: Arc<BlockChainClient<StateBackend = BC>>,
 }
 
-impl IpfsHandler {
-	pub fn client(&self) -> &BlockChainClient<StateBackend = StateDB> {
+impl<BC: ClientBackend> IpfsHandler<BC> {
+	pub fn client(&self) -> &BlockChainClient<StateBackend = BC> {
 		&*self.client
 	}
 
-	pub fn new(cors: DomainsValidation<AccessControlAllowOrigin>, hosts: DomainsValidation<Host>, client: Arc<BlockChainClient<StateBackend = StateDB>>) -> Self {
+	pub fn new(cors: DomainsValidation<AccessControlAllowOrigin>, hosts: DomainsValidation<Host>, client: Arc<BlockChainClient<StateBackend = BC>>) -> Self {
 		IpfsHandler {
 			cors_domains: cors.into(),
 			allowed_hosts: hosts.into(),
@@ -88,7 +87,7 @@ impl IpfsHandler {
 	}
 }
 
-impl hyper::service::Service for IpfsHandler {
+impl<BC: ClientBackend> hyper::service::Service for IpfsHandler<BC> {
 	type ReqBody = Body;
 	type ResBody = Body;
 	type Error = hyper::Error;
@@ -150,12 +149,12 @@ impl Drop for Listening {
 	}
 }
 
-pub fn start_server(
+pub fn start_server<BC: ClientBackend>(
 	port: u16,
 	interface: String,
 	cors: DomainsValidation<AccessControlAllowOrigin>,
 	hosts: DomainsValidation<Host>,
-	client: Arc<BlockChainClient<StateBackend = StateDB>>
+	client: Arc<BlockChainClient<StateBackend = BC>>
 ) -> Result<Listening, ServerError> {
 
 	let ip: IpAddr = interface.parse().map_err(|_| ServerError::InvalidInterface)?;

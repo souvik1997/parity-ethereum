@@ -69,7 +69,7 @@ use receipt::{Receipt, LocalizedReceipt};
 use snapshot::{self, io as snapshot_io, SnapshotClient};
 use spec::Spec;
 use state_db::StateDB;
-use state::{self, State, backend::Backend, backend::Proof, backend::ProofElement};
+use state::{self, State, backend::Backend, backend::Proof, backend::ProofCheck, backend::ProofElement};
 use trace;
 use trace::{TraceDB, ImportRequest as TraceImportRequest, LocalizedTrace, Database as TraceDatabase};
 use transaction::{self, LocalizedTransaction, UnverifiedTransaction, SignedTransaction, Transaction, Action};
@@ -266,7 +266,67 @@ impl ClientBackend for StateDB {
 	}
 }
 
+impl ClientBackend for ProofCheck {
+	fn create(db: &Arc<BlockChainDB>, check: Option<(&Spec<Self>, &Factories)>, pruning: journaldb::Algorithm, cache_size: usize) -> Result<Self, ::error::Error> {
+		// We have to return something but this is invalid
+		Ok(Self::new(&vec![]))
+	}
+
+	fn sanity_check(&self, chain: &Arc<BlockChain>) {
+
+	}
+
+	fn pruning_info(&self, chain: &Arc<BlockChain>) -> PruningInfo {
+		PruningInfo {
+			earliest_chain: 1,
+			earliest_state: 0
+		}
+	}
+
+	fn state_at_proof(&self, proof: &Proof) -> Option<Self> {
+		let values: Vec<DBValue> = proof.values.iter().map(|v| v.element.clone()).collect();
+		Some(Self::new(&values))
+	}
+
+	fn state_at_hash(&self, hash: &H256) -> Option<Self> {
+		None
+	}
+
+	fn sync_cache(&mut self, enacted: &[H256], retracted: &[H256], is_best: bool) {
+
+	}
+
+	fn state_data(&self, hash: &H256) -> Option<Bytes> {
+		None
+	}
+
+	fn prune_ancient(&mut self, chain: &BlockChain, history: u64, history_mem: usize, on_prune: &mut FnMut(DBTransaction)) -> Result<(), ::error::Error> {
+		Ok(())
+	}
+
+	fn cache_size(&self) -> usize {
+		0
+	}
+
+	fn is_pruned(&self) -> bool {
+		true
+	}
+
+	fn earliest_era(&self) -> Option<u64> {
+		None
+	}
+
+	fn journal_under(&mut self, batch: &mut DBTransaction, now: u64, id: &H256) -> ::std::io::Result<u32> {
+		Ok(0)
+	}
+
+	fn mem_used(&self) -> usize {
+		0
+	}
+}
+
 pub type Client = CoreClient<StateDB>;
+pub type StatelessClient = CoreClient<ProofCheck>;
 
 /// Blockchain database client backed by a persistent database. Owns and manages a blockchain and a block queue.
 /// Call `import_block()` to import a block asynchronously; `flush_queue()` flushes the queue.

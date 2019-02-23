@@ -38,6 +38,7 @@ extern crate keccak_hash as hash;
 extern crate triehash_ethereum;
 
 extern crate ethcore_light as light;
+extern crate rich_phantoms;
 
 #[cfg(test)] extern crate ethkey;
 #[cfg(test)] extern crate kvdb_memorydb;
