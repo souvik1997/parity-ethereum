@@ -135,7 +135,7 @@ fn restore_using<R: SnapshotReader>(snapshot: Arc<SnapshotService<StateDB>>, rea
 
 impl SnapshotCommand {
 	// shared portion of snapshot commands: start the client service
-	fn start_service(self) -> Result<ClientService, String> {
+	fn start_service(self) -> Result<ClientService<StateDB>, String> {
 		// load spec file
 		let spec = self.spec.spec(&self.dirs.cache)?;
 

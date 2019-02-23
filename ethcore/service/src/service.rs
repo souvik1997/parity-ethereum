@@ -16,6 +16,8 @@
 
 //! Creates and registers client and network services.
 
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::path::Path;
 use std::time::Duration;
@@ -27,35 +29,34 @@ use stop_guard::StopGuard;
 
 use sync::PrivateTxHandler;
 use ethcore::{BlockChainDB, BlockChainDBHandler};
-use ethcore::client::{Client, ClientConfig, ChainNotify, ClientIoMessage};
+use ethcore::client::{CoreClient, ClientConfig, ChainNotify, ClientIoMessage, ClientBackend};
 use ethcore::miner::Miner;
 use ethcore::snapshot::service::{Service as SnapshotService, ServiceParams as SnapServiceParams};
 use ethcore::snapshot::{SnapshotService as _SnapshotService, RestorationStatus};
 use ethcore::spec::Spec;
 use ethcore::account_provider::AccountProvider;
-use ethcore::state_db::StateDB;
 
 use ethcore_private_tx::{self, Importer};
 use Error;
 
-pub struct PrivateTxService {
-	provider: Arc<ethcore_private_tx::Provider>,
+pub struct PrivateTxService<BC: ClientBackend> {
+	provider: Arc<ethcore_private_tx::Provider<BC>>,
 }
 
-impl PrivateTxService {
-	fn new(provider: Arc<ethcore_private_tx::Provider>) -> Self {
-		PrivateTxService {
+impl<BC: ClientBackend> PrivateTxService<BC> {
+	fn new(provider: Arc<ethcore_private_tx::Provider<BC>>) -> Self {
+		Self {
 			provider,
 		}
 	}
 
 	/// Returns underlying provider.
-	pub fn provider(&self) -> Arc<ethcore_private_tx::Provider> {
+	pub fn provider(&self) -> Arc<ethcore_private_tx::Provider<BC>> {
 		self.provider.clone()
 	}
 }
 
-impl PrivateTxHandler for PrivateTxService {
+impl<BC: ClientBackend> PrivateTxHandler for PrivateTxService<BC> {
 	fn import_private_transaction(&self, rlp: &[u8]) -> Result<H256, String> {
 		match self.provider.import_private_transaction(rlp) {
 			Ok(import_result) => Ok(import_result),
@@ -78,36 +79,36 @@ impl PrivateTxHandler for PrivateTxService {
 }
 
 /// Client service setup. Creates and registers client and network services with the IO subsystem.
-pub struct ClientService {
-	io_service: Arc<IoService<ClientIoMessage>>,
-	client: Arc<Client>,
-	snapshot: Arc<SnapshotService<StateDB>>,
-	private_tx: Arc<PrivateTxService>,
+pub struct ClientService<BC: ClientBackend> {
+	io_service: Arc<IoService<ClientIoMessage<BC>>>,
+	client: Arc<CoreClient<BC>>,
+	snapshot: Arc<SnapshotService<BC>>,
+	private_tx: Arc<PrivateTxService<BC>>,
 	database: Arc<BlockChainDB>,
 	_stop_guard: StopGuard,
 }
 
-impl ClientService {
+impl<BC: ClientBackend> ClientService<BC> {
 	/// Start the `ClientService`.
 	pub fn start(
 		config: ClientConfig,
-		spec: &Spec<StateDB>,
+		spec: &Spec<BC>,
 		blockchain_db: Arc<BlockChainDB>,
 		snapshot_path: &Path,
 		restoration_db_handler: Box<BlockChainDBHandler>,
 		_ipc_path: &Path,
-		miner: Arc<Miner<StateDB>>,
+		miner: Arc<Miner<BC>>,
 		account_provider: Arc<AccountProvider>,
 		encryptor: Box<ethcore_private_tx::Encryptor>,
 		private_tx_conf: ethcore_private_tx::ProviderConfig,
-		) -> Result<ClientService, Error>
+		) -> Result<Self, Error>
 	{
-		let io_service = IoService::<ClientIoMessage>::start()?;
+		let io_service = IoService::<ClientIoMessage<BC>>::start()?;
 
 		info!("Configured for {} using {} engine", Colour::White.bold().paint(spec.name.clone()), Colour::Yellow.bold().paint(spec.engine.name()));
 
 		let pruning = config.pruning;
-		let client = Client::new(
+		let client = CoreClient::new(
 			config,
 			&spec,
 			blockchain_db.clone(),
@@ -141,6 +142,7 @@ impl ClientService {
 		let client_io = Arc::new(ClientIoHandler {
 			client: client.clone(),
 			snapshot: snapshot.clone(),
+			_phantom: PhantomData,
 		});
 		io_service.register_handler(client_io)?;
 
@@ -159,27 +161,27 @@ impl ClientService {
 	}
 
 	/// Get general IO interface
-	pub fn register_io_handler(&self, handler: Arc<IoHandler<ClientIoMessage> + Send>) -> Result<(), IoError> {
+	pub fn register_io_handler(&self, handler: Arc<IoHandler<ClientIoMessage<BC>> + Send>) -> Result<(), IoError> {
 		self.io_service.register_handler(handler)
 	}
 
 	/// Get client interface
-	pub fn client(&self) -> Arc<Client> {
+	pub fn client(&self) -> Arc<CoreClient<BC>> {
 		self.client.clone()
 	}
 
 	/// Get snapshot interface.
-	pub fn snapshot_service(&self) -> Arc<SnapshotService<StateDB>> {
+	pub fn snapshot_service(&self) -> Arc<SnapshotService<BC>> {
 		self.snapshot.clone()
 	}
 
 	/// Get private transaction service.
-	pub fn private_tx_service(&self) -> Arc<PrivateTxService> {
+	pub fn private_tx_service(&self) -> Arc<PrivateTxService<BC>> {
 		self.private_tx.clone()
 	}
 
 	/// Get network service component
-	pub fn io(&self) -> Arc<IoService<ClientIoMessage>> {
+	pub fn io(&self) -> Arc<IoService<ClientIoMessage<BC>>> {
 		self.io_service.clone()
 	}
 
@@ -198,9 +200,10 @@ impl ClientService {
 }
 
 /// IO interface for the Client handler
-struct ClientIoHandler {
-	client: Arc<Client>,
-	snapshot: Arc<SnapshotService<StateDB>>,
+struct ClientIoHandler<BC: ClientBackend> {
+	client: Arc<CoreClient<BC>>,
+	snapshot: Arc<SnapshotService<BC>>,
+	_phantom: SafePhantomData<BC>,
 }
 
 const CLIENT_TICK_TIMER: TimerToken = 0;
@@ -209,13 +212,13 @@ const SNAPSHOT_TICK_TIMER: TimerToken = 1;
 const CLIENT_TICK: Duration = Duration::from_secs(5);
 const SNAPSHOT_TICK: Duration = Duration::from_secs(10);
 
-impl IoHandler<ClientIoMessage> for ClientIoHandler {
-	fn initialize(&self, io: &IoContext<ClientIoMessage>) {
+impl<BC: ClientBackend> IoHandler<ClientIoMessage<BC>> for ClientIoHandler<BC> {
+	fn initialize(&self, io: &IoContext<ClientIoMessage<BC>>) {
 		io.register_timer(CLIENT_TICK_TIMER, CLIENT_TICK).expect("Error registering client timer");
 		io.register_timer(SNAPSHOT_TICK_TIMER, SNAPSHOT_TICK).expect("Error registering snapshot timer");
 	}
 
-	fn timeout(&self, _io: &IoContext<ClientIoMessage>, timer: TimerToken) {
+	fn timeout(&self, _io: &IoContext<ClientIoMessage<BC>>, timer: TimerToken) {
 		trace_time!("service::read");
 		match timer {
 			CLIENT_TICK_TIMER => {
@@ -228,7 +231,7 @@ impl IoHandler<ClientIoMessage> for ClientIoHandler {
 		}
 	}
 
-	fn message(&self, _io: &IoContext<ClientIoMessage>, net_message: &ClientIoMessage) {
+	fn message(&self, _io: &IoContext<ClientIoMessage<BC>>, net_message: &ClientIoMessage<BC>) {
 		trace_time!("service::message");
 		use std::thread;
 
@@ -303,7 +306,7 @@ mod tests {
 		let client_db = client_db_handler.open(&client_path).unwrap();
 		let restoration_db_handler = test_helpers::restoration_db_handler(client_db_config);
 
-		let spec = Spec::new_test();
+		let spec = Spec::<::ethcore::state_db::StateDB>::new_test();
 		let service = ClientService::start(
 			ClientConfig::default(),
 			&spec,

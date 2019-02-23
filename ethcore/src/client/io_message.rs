@@ -16,13 +16,13 @@
 
 use std::fmt;
 use bytes::Bytes;
-use client::Client;
+use client::{CoreClient, ClientBackend};
 use ethereum_types::H256;
 use snapshot::ManifestData;
 
 /// Message type for external and internal events
 #[derive(Debug)]
-pub enum ClientIoMessage {
+pub enum ClientIoMessage<BC: ClientBackend> {
 	/// Best Block Hash in chain has been changed
 	NewChainHead,
 	/// A block is ready
@@ -36,20 +36,20 @@ pub enum ClientIoMessage {
 	/// Take a snapshot for the block with given number.
 	TakeSnapshot(u64),
 	/// Execute wrapped closure
-	Execute(Callback),
+	Execute(Callback<BC>),
 }
 
-impl ClientIoMessage {
+impl<BC: ClientBackend> ClientIoMessage<BC> {
 	/// Create new `ClientIoMessage` that executes given procedure.
-	pub fn execute<F: Fn(&Client) + Send + Sync + 'static>(fun: F) -> Self {
+	pub fn execute<F: Fn(&CoreClient<BC>) + Send + Sync + 'static>(fun: F) -> Self {
 		ClientIoMessage::Execute(Callback(Box::new(fun)))
 	}
 }
 
 /// A function to invoke in the client thread.
-pub struct Callback(pub Box<Fn(&Client) + Send + Sync>);
+pub struct Callback<BC: ClientBackend>(pub Box<Fn(&CoreClient<BC>) + Send + Sync>);
 
-impl fmt::Debug for Callback {
+impl<BC: ClientBackend> fmt::Debug for Callback<BC> {
 	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
 		write!(fmt, "<callback>")
 	}

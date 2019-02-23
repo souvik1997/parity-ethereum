@@ -17,7 +17,7 @@
 //! Watcher for snapshot-related chain events.
 
 use parking_lot::Mutex;
-use client::{BlockInfo, Client, ChainNotify, NewBlocks, ClientIoMessage};
+use client::{BlockInfo, Client, ChainNotify, NewBlocks, ClientIoMessage, ClientBackend};
 use ids::BlockId;
 
 use io::IoChannel;
@@ -54,7 +54,7 @@ trait Broadcast: Send + Sync {
 	fn take_at(&self, num: Option<u64>);
 }
 
-impl Broadcast for Mutex<IoChannel<ClientIoMessage>> {
+impl<BC: ClientBackend> Broadcast for Mutex<IoChannel<ClientIoMessage<BC>>> {
 	fn take_at(&self, num: Option<u64>) {
 		let num = match num {
 			Some(n) => n,
@@ -82,7 +82,7 @@ impl Watcher {
 	/// Create a new `Watcher` which will trigger a snapshot event
 	/// once every `period` blocks, but only after that block is
 	/// `history` blocks old.
-	pub fn new<F>(client: Arc<Client>, sync_status: F, channel: IoChannel<ClientIoMessage>, period: u64, history: u64) -> Self
+	pub fn new<F, BC: ClientBackend>(client: Arc<Client>, sync_status: F, channel: IoChannel<ClientIoMessage<BC>>, period: u64, history: u64) -> Self
 		where F: 'static + Send + Sync + Fn() -> bool
 	{
 		Watcher {

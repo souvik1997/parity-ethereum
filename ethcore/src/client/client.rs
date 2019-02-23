@@ -304,7 +304,7 @@ pub struct CoreClient<BC: ClientBackend> {
 
 	/// Flag changed by `sleep` and `wake_up` methods. Not to be confused with `enabled`.
 	liveness: AtomicBool,
-	io_channel: RwLock<IoChannel<ClientIoMessage>>,
+	io_channel: RwLock<IoChannel<ClientIoMessage<BC>>>,
 
 	/// List of actors to be notified on certain chain events
 	notify: RwLock<Vec<Weak<ChainNotify>>>,
@@ -363,7 +363,7 @@ impl<BC: ClientBackend> CoreClient<BC> {
 		spec: &Spec<BC>,
 		db: Arc<BlockChainDB>,
 		miner: Arc<Miner<BC>>,
-		message_channel: IoChannel<ClientIoMessage>,
+		message_channel: IoChannel<ClientIoMessage<BC>>,
 	) -> Result<Arc<Self>, ::error::Error> {
 		let trie_spec = match config.fat_db {
 			true => TrieSpec::Fat,
@@ -629,7 +629,7 @@ impl<BC: ClientBackend> CoreClient<BC> {
 	}
 
 	/// Replace io channel. Useful for testing.
-	pub fn set_io_channel(&self, io_channel: IoChannel<ClientIoMessage>) {
+	pub fn set_io_channel(&self, io_channel: IoChannel<ClientIoMessage<BC>>) {
 		*self.io_channel.write() = io_channel;
 	}
 
@@ -2784,8 +2784,8 @@ impl IoChannelQueue {
 		}
 	}
 
-	pub fn queue<F>(&self, channel: &IoChannel<ClientIoMessage>, count: usize, fun: F) -> Result<(), QueueError> where
-		F: Fn(&Client) + Send + Sync + 'static,
+	pub fn queue<F, BC: ClientBackend>(&self, channel: &IoChannel<ClientIoMessage<BC>>, count: usize, fun: F) -> Result<(), QueueError> where
+		F: Fn(&CoreClient<BC>) + Send + Sync + 'static,
 	{
 		let queue_size = self.currently_queued.load(AtomicOrdering::Relaxed);
 		ensure!(queue_size < self.limit, QueueErrorKind::Full(self.limit));

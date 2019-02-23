@@ -44,7 +44,7 @@ use account_provider::{AccountProvider, SignError as AccountError};
 use block::{ClosedBlock, IsBlock, Block, SealedBlock};
 use client::{
 	BlockChain, ChainInfo, CallContract, BlockProducer, SealedBlockImporter, Nonce, TransactionInfo, TransactionId,
-	ProvingCallContract, ReopenBlock, BroadcastProposalBlock, ImportSealedBlock, PrepareOpenBlock
+	ProvingCallContract, ReopenBlock, BroadcastProposalBlock, ImportSealedBlock, PrepareOpenBlock, ClientBackend
 };
 use client::{BlockId, ClientIoMessage};
 use executive::contract_address;
@@ -212,7 +212,7 @@ impl<B: Backend + Clone> SealingWork<B> {
 
 /// Keeps track of transactions using priority queue and holds currently mined block.
 /// Handles preparing work for "work sealing" or seals "internally" if Engine does not require work.
-pub struct Miner<B: Backend + Clone> {
+pub struct Miner<B: ClientBackend> {
 	// NOTE [ToDr]  When locking always lock in this order!
 	sealing: Mutex<SealingWork<B>>,
 	params: RwLock<AuthoringParams>,
@@ -225,10 +225,10 @@ pub struct Miner<B: Backend + Clone> {
 	transaction_queue: Arc<TransactionQueue>,
 	engine: Arc<EthEngine<B>>,
 	accounts: Option<Arc<AccountProvider>>,
-	io_channel: RwLock<Option<IoChannel<ClientIoMessage>>>,
+	io_channel: RwLock<Option<IoChannel<ClientIoMessage<B>>>>,
 }
 
-impl<B: Backend + Clone + 'static> Miner<B> {
+impl<B: ClientBackend> Miner<B> {
 	/// Push listener that will handle new jobs
 	#[cfg(feature = "work-notify")]
 	pub fn add_work_listener(&self, notifier: Box<NotifyWork>) {
@@ -293,7 +293,7 @@ impl<B: Backend + Clone + 'static> Miner<B> {
 	}
 
 	/// Sets `IoChannel`
-	pub fn set_io_channel(&self, io_channel: IoChannel<ClientIoMessage>) {
+	pub fn set_io_channel(&self, io_channel: IoChannel<ClientIoMessage<B>>) {
 		*self.io_channel.write() = Some(io_channel);
 	}
 
@@ -809,7 +809,7 @@ impl<B: Backend + Clone + 'static> Miner<B> {
 
 const SEALING_TIMEOUT_IN_BLOCKS : u64 = 5;
 
-impl<B: Backend + Clone + 'static> miner::MinerService for Miner<B> {
+impl<B: ClientBackend> miner::MinerService for Miner<B> {
 	type State = State<B>;
 	type StateBackend = B;
 
@@ -1243,7 +1243,7 @@ impl<B: Backend + Clone + 'static> miner::MinerService for Miner<B> {
 				let accounts = self.accounts.clone();
 				let refuse_service_transactions = self.options.refuse_service_transactions;
 
-				let cull = move |chain: &::client::Client| {
+				let cull = move |chain: &::client::CoreClient<B>| {
 					let client = PoolClient::new(
 						chain,
 						&nonce_cache,

@@ -221,7 +221,7 @@ pub struct FullDependencies {
 	pub sync: Arc<SyncProvider>,
 	pub net: Arc<ManageNetwork>,
 	pub secret_store: Arc<AccountProvider>,
-	pub private_tx_service: Option<Arc<PrivateTxService>>,
+	pub private_tx_service: Option<Arc<PrivateTxService<StateDB>>>,
 	pub miner: Arc<Miner<StateDB>>,
 	pub external_miner: Arc<ExternalMiner>,
 	pub logger: Arc<RotatingLogger>,
@@ -443,7 +443,7 @@ pub struct LightDependencies<T> {
 	pub experimental_rpcs: bool,
 	pub executor: Executor,
 	pub whisper_rpc: Option<::whisper::RpcFactory>,
-	pub private_tx_service: Option<Arc<PrivateTransactionManager>>,
+	pub private_tx_service: Option<Arc<PrivateTransactionManager<StateDB>>>,
 	pub gas_price_percentile: usize,
 	pub poll_lifetime: u32,
 }

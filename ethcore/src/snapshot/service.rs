@@ -28,7 +28,7 @@ use super::{ManifestData, StateRebuilder, Rebuilder, RestorationStatus, Snapshot
 use super::io::{SnapshotReader, LooseReader, SnapshotWriter, LooseWriter};
 
 use blockchain::{BlockChain, BlockChainDB, BlockChainDBHandler};
-use client::{BlockInfo, BlockChainClient, Client, ChainInfo, ClientIoMessage};
+use client::{BlockInfo, BlockChainClient, CoreClient, ChainInfo, ClientIoMessage, ClientBackend};
 use engines::EthEngine;
 use error::{Error, ErrorKind as SnapshotErrorKind};
 use snapshot::{Error as SnapshotError};
@@ -204,13 +204,13 @@ impl<B: Backend + Clone + 'static> Restoration<B> {
 }
 
 /// Type alias for client io channel.
-pub type Channel = IoChannel<ClientIoMessage>;
+pub type Channel<BC> = IoChannel<ClientIoMessage<BC>>;
 
 /// Trait alias for the Client Service used
 pub trait SnapshotClient: BlockChainClient + BlockInfo + DatabaseRestore {}
 
 /// Snapshot service parameters.
-pub struct ServiceParams<B: Backend + Clone> {
+pub struct ServiceParams<B: ClientBackend> {
 	/// The consensus engine this is built on.
 	pub engine: Arc<EthEngine<B>>,
 	/// The chain's genesis block.
@@ -220,7 +220,7 @@ pub struct ServiceParams<B: Backend + Clone> {
 	/// Handler for opening a restoration DB.
 	pub restoration_db_handler: Box<BlockChainDBHandler>,
 	/// Async IO channel for sending messages.
-	pub channel: Channel,
+	pub channel: Channel<B>,
 	/// The directory to put snapshots in.
 	/// Usually "<chain hash>/snapshot"
 	pub snapshot_root: PathBuf,
@@ -230,11 +230,11 @@ pub struct ServiceParams<B: Backend + Clone> {
 
 /// `SnapshotService` implementation.
 /// This controls taking snapshots and restoring from them.
-pub struct Service<B: Backend + Clone + 'static> {
+pub struct Service<B: ClientBackend> {
 	restoration: Mutex<Option<Restoration<B>>>,
 	restoration_db_handler: Box<BlockChainDBHandler>,
 	snapshot_root: PathBuf,
-	io_channel: Mutex<Channel>,
+	io_channel: Mutex<Channel<B>>,
 	pruning: Algorithm,
 	status: Mutex<RestorationStatus>,
 	reader: RwLock<Option<LooseReader>>,
@@ -248,7 +248,7 @@ pub struct Service<B: Backend + Clone + 'static> {
 	restoring_snapshot: AtomicBool,
 }
 
-impl<B: Backend + Clone + 'static> Service<B> {
+impl<B: ClientBackend> Service<B> {
 	/// Create a new snapshot service from the given parameters.
 	pub fn new(params: ServiceParams<B>) -> Result<Self, Error> {
 		let mut service = Service {
@@ -462,7 +462,7 @@ impl<B: Backend + Clone + 'static> Service<B> {
 	/// calling this while a restoration is in progress or vice versa
 	/// will lead to a race condition where the first one to finish will
 	/// have their produced snapshot overwritten.
-	pub fn take_snapshot(&self, client: &Client, num: u64) -> Result<(), Error> {
+	pub fn take_snapshot(&self, client: &CoreClient<B>, num: u64) -> Result<(), Error> {
 		if self.taking_snapshot.compare_and_swap(false, true, Ordering::SeqCst) {
 			info!("Skipping snapshot at #{} as another one is currently in-progress.", num);
 			return Ok(());
@@ -768,7 +768,7 @@ impl<B: Backend + Clone + 'static> Service<B> {
 	}
 }
 
-impl<B: Backend + Clone + 'static> SnapshotService for Service<B> {
+impl<B: ClientBackend> SnapshotService for Service<B> {
 	fn manifest(&self) -> Option<ManifestData> {
 		self.reader.read().as_ref().map(|r| r.manifest().clone())
 	}
@@ -852,7 +852,7 @@ impl<B: Backend + Clone + 'static> SnapshotService for Service<B> {
 	}
 }
 
-impl<B: Backend + Clone + 'static> Drop for Service<B> {
+impl<B: ClientBackend> Drop for Service<B> {
 	fn drop(&mut self) {
 		self.abort_restore();
 	}
@@ -874,7 +874,7 @@ mod tests {
 	fn sends_async_messages() {
 		let gas_prices = vec![1.into(), 2.into(), 3.into(), 999.into()];
 		let client = generate_dummy_client_with_spec_and_data(Spec::new_null, 400, 5, &gas_prices);
-		let service = IoService::<ClientIoMessage>::start().unwrap();
+		let service = IoService::<ClientIoMessage<StateDB>>::start().unwrap();
 		let spec = Spec::<StateDB>::new_test();
 
 		let tempdir = TempDir::new("").unwrap();

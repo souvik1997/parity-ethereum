@@ -174,7 +174,7 @@ impl<T: ChainDataFetcher> Client<T> {
 		chain_col: Option<u32>,
 		spec: &Spec<StateDB>,
 		fetcher: T,
-		io_channel: IoChannel<ClientIoMessage>,
+		io_channel: IoChannel<ClientIoMessage<StateDB>>,
 		cache: Arc<Mutex<Cache>>
 	) -> Result<Self, Error> {
 		Ok(Self {

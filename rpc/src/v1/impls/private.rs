@@ -21,6 +21,7 @@ use std::sync::Arc;
 use rlp::Rlp;
 
 use ethcore_private_tx::Provider as PrivateTransactionManager;
+use ethcore::client::ClientBackend;
 use ethereum_types::Address;
 use transaction::SignedTransaction;
 
@@ -32,19 +33,19 @@ use v1::metadata::Metadata;
 use v1::helpers::{errors, fake_sign};
 
 /// Private transaction manager API endpoint implementation.
-pub struct PrivateClient {
-	private: Option<Arc<PrivateTransactionManager>>,
+pub struct PrivateClient<BC: ClientBackend> {
+	private: Option<Arc<PrivateTransactionManager<BC>>>,
 }
 
-impl PrivateClient {
+impl<BC: ClientBackend> PrivateClient<BC> {
 	/// Creates a new instance.
-	pub fn new(private: Option<Arc<PrivateTransactionManager>>) -> Self {
+	pub fn new(private: Option<Arc<PrivateTransactionManager<BC>>>) -> Self {
 		PrivateClient {
 			private,
 		}
 	}
 
-	fn unwrap_manager(&self) -> Result<&PrivateTransactionManager, Error> {
+	fn unwrap_manager(&self) -> Result<&PrivateTransactionManager<BC>, Error> {
 		match self.private {
 			Some(ref arc) => Ok(&**arc),
 			None => Err(errors::light_unimplemented(None)),
@@ -52,7 +53,7 @@ impl PrivateClient {
 	}
 }
 
-impl Private for PrivateClient {
+impl<BC: ClientBackend> Private for PrivateClient<BC> {
 	type Metadata = Metadata;
 
 	fn send_transaction(&self, request: Bytes) -> Result<PrivateTransactionReceipt, Error> {

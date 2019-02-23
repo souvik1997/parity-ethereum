@@ -24,7 +24,7 @@ use transaction::{
 	SignedTransaction, PendingTransaction, UnverifiedTransaction,
 	Condition as TransactionCondition
 };
-use ethcore::client::ClientIoMessage;
+use ethcore::client::{ClientIoMessage, ClientBackend};
 use io::IoHandler;
 use rlp::Rlp;
 use kvdb::KeyValueDB;
@@ -204,14 +204,14 @@ impl<T: NodeInfo> LocalDataStore<T> {
 	}
 }
 
-impl<T: NodeInfo> IoHandler<ClientIoMessage> for LocalDataStore<T> {
-	fn initialize(&self, io: &::io::IoContext<ClientIoMessage>) {
+impl<T: NodeInfo, BC: ClientBackend> IoHandler<ClientIoMessage<BC>> for LocalDataStore<T> {
+	fn initialize(&self, io: &::io::IoContext<ClientIoMessage<BC>>) {
 		if let Err(e) = io.register_timer(UPDATE_TIMER, UPDATE_TIMEOUT) {
 			warn!(target: "local_store", "Error registering local store update timer: {}", e);
 		}
 	}
 
-	fn timeout(&self, _io: &::io::IoContext<ClientIoMessage>, timer: ::io::TimerToken) {
+	fn timeout(&self, _io: &::io::IoContext<ClientIoMessage<BC>>, timer: ::io::TimerToken) {
 		if let UPDATE_TIMER = timer {
 			if let Err(e) = self.update() {
 				debug!(target: "local_store", "Error updating local store: {}", e);

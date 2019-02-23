@@ -25,7 +25,8 @@ use std::time::{Instant, Duration};
 use atty;
 use ethcore::client::{
 	BlockId, BlockChainClient, ChainInfo, BlockInfo, BlockChainInfo,
-	BlockQueueInfo, ChainNotify, NewBlocks, ClientReport, Client, ClientIoMessage
+	BlockQueueInfo, ChainNotify, NewBlocks, ClientReport, Client, ClientIoMessage,
+	ClientBackend
 };
 use ethcore::header::BlockNumber;
 use ethcore::snapshot::{RestorationStatus, SnapshotService as SS};
@@ -439,12 +440,12 @@ impl LightChainNotify for Informant<LightNodeInformantData> {
 
 const INFO_TIMER: TimerToken = 0;
 
-impl<T: InformantData> IoHandler<ClientIoMessage> for Informant<T> {
-	fn initialize(&self, io: &IoContext<ClientIoMessage>) {
+impl<T: InformantData, BC: ClientBackend> IoHandler<ClientIoMessage<BC>> for Informant<T> {
+	fn initialize(&self, io: &IoContext<ClientIoMessage<BC>>) {
 		io.register_timer(INFO_TIMER, Duration::from_secs(5)).expect("Error registering timer");
 	}
 
-	fn timeout(&self, _io: &IoContext<ClientIoMessage>, timer: TimerToken) {
+	fn timeout(&self, _io: &IoContext<ClientIoMessage<BC>>, timer: TimerToken) {
 		if timer == INFO_TIMER && !self.in_shutdown.load(AtomicOrdering::SeqCst) {
 			self.tick();
 		}

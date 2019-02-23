@@ -846,7 +846,7 @@ enum RunningClientInner {
 		rpc: jsonrpc_core::MetaIoHandler<Metadata, informant::Middleware<informant::ClientNotifier>>,
 		informant: Arc<Informant<FullNodeInformantData>>,
 		client: Arc<Client>,
-		client_service: Arc<ClientService>,
+		client_service: Arc<ClientService<StateDB>>,
 		keep_alive: Box<Any>,
 	},
 }

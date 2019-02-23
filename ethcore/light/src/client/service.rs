@@ -60,13 +60,13 @@ impl fmt::Display for Error {
 /// Light client service.
 pub struct Service<T> {
 	client: Arc<Client<T>>,
-	io_service: IoService<ClientIoMessage>,
+	io_service: IoService<ClientIoMessage<StateDB>>,
 }
 
 impl<T: ChainDataFetcher> Service<T> {
 	/// Start the service: initialize I/O workers and client itself.
 	pub fn start(config: ClientConfig, spec: &Spec<StateDB>, fetcher: T, db: Arc<BlockChainDB>, cache: Arc<Mutex<Cache>>) -> Result<Self, Error> {
-		let io_service = IoService::<ClientIoMessage>::start().map_err(Error::Io)?;
+		let io_service = IoService::<ClientIoMessage<StateDB>>::start().map_err(Error::Io)?;
 		let client = Arc::new(Client::new(config,
 			db.key_value().clone(),
 			db::COL_LIGHT_CHAIN,
@@ -91,7 +91,7 @@ impl<T: ChainDataFetcher> Service<T> {
 	}
 
 	/// Register an I/O handler on the service.
-	pub fn register_handler(&self, handler: Arc<IoHandler<ClientIoMessage> + Send>) -> Result<(), IoError> {
+	pub fn register_handler(&self, handler: Arc<IoHandler<ClientIoMessage<StateDB>> + Send>) -> Result<(), IoError> {
 		self.io_service.register_handler(handler)
 	}
 
@@ -103,8 +103,8 @@ impl<T: ChainDataFetcher> Service<T> {
 
 struct ImportBlocks<T>(Arc<Client<T>>);
 
-impl<T: ChainDataFetcher> IoHandler<ClientIoMessage> for ImportBlocks<T> {
-	fn message(&self, _io: &IoContext<ClientIoMessage>, message: &ClientIoMessage) {
+impl<T: ChainDataFetcher> IoHandler<ClientIoMessage<StateDB>> for ImportBlocks<T> {
+	fn message(&self, _io: &IoContext<ClientIoMessage<StateDB>>, message: &ClientIoMessage<StateDB>) {
 		if let ClientIoMessage::BlockVerified = *message {
 			self.0.import_verified();
 		}

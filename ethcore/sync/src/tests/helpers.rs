@@ -522,8 +522,8 @@ impl TestIoHandler {
 	}
 }
 
-impl IoHandler<ClientIoMessage> for TestIoHandler {
-	fn message(&self, _io: &IoContext<ClientIoMessage>, net_message: &ClientIoMessage) {
+impl IoHandler<ClientIoMessage<StateDB>> for TestIoHandler {
+	fn message(&self, _io: &IoContext<ClientIoMessage<StateDB>>, net_message: &ClientIoMessage<StateDB>) {
 		match *net_message {
 			ClientIoMessage::Execute(ref exec) => {
 				*self.private_tx_queued.lock() += 1;

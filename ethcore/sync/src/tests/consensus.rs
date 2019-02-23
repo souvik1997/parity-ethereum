@@ -50,8 +50,8 @@ fn authority_round() {
 
 	let chain_id = Spec::<StateDB>::new_test_round().chain_id();
 	let mut net = TestNet::with_spec_and_accounts(2, SyncConfig::default(), Spec::<StateDB>::new_test_round, Some(ap));
-	let io_handler0: Arc<IoHandler<ClientIoMessage>> = Arc::new(TestIoHandler::new(net.peer(0).chain.clone()));
-	let io_handler1: Arc<IoHandler<ClientIoMessage>> = Arc::new(TestIoHandler::new(net.peer(1).chain.clone()));
+	let io_handler0: Arc<IoHandler<ClientIoMessage<StateDB>>> = Arc::new(TestIoHandler::new(net.peer(0).chain.clone()));
+	let io_handler1: Arc<IoHandler<ClientIoMessage<StateDB>>> = Arc::new(TestIoHandler::new(net.peer(1).chain.clone()));
 	// Push transaction to both clients. Only one of them gets lucky to produce a block.
 	net.peer(0).miner.set_author(s0.address(), Some("".into())).unwrap();
 	net.peer(1).miner.set_author(s1.address(), Some("".into())).unwrap();
@@ -137,8 +137,8 @@ fn tendermint() {
 
 	let chain_id = Spec::<StateDB>::new_test_tendermint().chain_id();
 	let mut net = TestNet::with_spec_and_accounts(2, SyncConfig::default(), Spec::<StateDB>::new_test_tendermint, Some(ap));
-	let io_handler0: Arc<IoHandler<ClientIoMessage>> = Arc::new(TestIoHandler::new(net.peer(0).chain.clone()));
-	let io_handler1: Arc<IoHandler<ClientIoMessage>> = Arc::new(TestIoHandler::new(net.peer(1).chain.clone()));
+	let io_handler0: Arc<IoHandler<ClientIoMessage<StateDB>>> = Arc::new(TestIoHandler::new(net.peer(0).chain.clone()));
+	let io_handler1: Arc<IoHandler<ClientIoMessage<StateDB>>> = Arc::new(TestIoHandler::new(net.peer(1).chain.clone()));
 	// Push transaction to both clients. Only one of them issues a proposal.
 	net.peer(0).miner.set_author(s0.address(), Some("".into())).unwrap();
 	trace!(target: "poa", "Peer 0 is {}.", s0.address());

@@ -81,11 +81,10 @@ use ethcore::executed::{Executed};
 use transaction::{SignedTransaction, Transaction, Action, UnverifiedTransaction};
 use ethcore::{contract_address as ethcore_contract_address};
 use ethcore::client::{
-	Client, ChainNotify, NewBlocks, ChainMessageType, ClientIoMessage, BlockId, CallContract
+	CoreClient, ChainNotify, NewBlocks, ChainMessageType, ClientIoMessage, BlockId, CallContract, ClientBackend
 };
 use ethcore::account_provider::AccountProvider;
 use ethcore::miner::{self, Miner, MinerService, pool_client::NonceCache};
-use ethcore::state_db::StateDB;
 use ethcore::trace::{Tracer, VMTracer};
 use rustc_hex::FromHex;
 use ethkey::Password;
@@ -131,7 +130,7 @@ pub struct Receipt {
 }
 
 /// Manager of private transactions
-pub struct Provider {
+pub struct Provider<BC: ClientBackend> {
 	encryptor: Box<Encryptor>,
 	validator_accounts: HashSet<Address>,
 	signer_account: Option<Address>,
@@ -139,10 +138,10 @@ pub struct Provider {
 	notify: RwLock<Vec<Weak<ChainNotify>>>,
 	transactions_for_signing: RwLock<SigningStore>,
 	transactions_for_verification: VerificationStore,
-	client: Arc<Client>,
-	miner: Arc<Miner<StateDB>>,
+	client: Arc<CoreClient<BC>>,
+	miner: Arc<Miner<BC>>,
 	accounts: Arc<AccountProvider>,
-	channel: IoChannel<ClientIoMessage>,
+	channel: IoChannel<ClientIoMessage<BC>>,
 }
 
 #[derive(Debug)]
@@ -153,15 +152,15 @@ pub struct PrivateExecutionResult<T, V> where T: Tracer, V: VMTracer {
 	result: Executed<T::Output, V::Output>,
 }
 
-impl Provider where {
+impl<BC: ClientBackend> Provider<BC> where {
 	/// Create a new provider.
 	pub fn new(
-		client: Arc<Client>,
-		miner: Arc<Miner<StateDB>>,
+		client: Arc<CoreClient<BC>>,
+		miner: Arc<Miner<BC>>,
 		accounts: Arc<AccountProvider>,
 		encryptor: Box<Encryptor>,
 		config: ProviderConfig,
-		channel: IoChannel<ClientIoMessage>,
+		channel: IoChannel<ClientIoMessage<BC>>,
 	) -> Self {
 		Provider {
 			encryptor,
@@ -245,7 +244,7 @@ impl Provider where {
 		keccak(&state_buf.as_ref())
 	}
 
-	fn pool_client<'a>(&'a self, nonce_cache: &'a NonceCache) -> miner::pool_client::PoolClient<'a, Client, StateDB> {
+	fn pool_client<'a>(&'a self, nonce_cache: &'a NonceCache) -> miner::pool_client::PoolClient<'a, CoreClient<BC>, BC> {
 		let engine = self.client.engine();
 		let refuse_service_transactions = true;
 		miner::pool_client::PoolClient::new(
@@ -622,7 +621,7 @@ pub trait Importer {
 // it might actually make sense to decouple it from clientService and just use dedicated thread
 // for both verification and execution.
 
-impl Importer for Arc<Provider> {
+impl<BC: ClientBackend> Importer for Arc<Provider<BC>> {
 	fn import_private_transaction(&self, rlp: &[u8]) -> Result<H256, Error> {
 		trace!(target: "privatetx", "Private transaction received");
 		let private_tx: PrivateTransaction = Rlp::new(rlp).as_val()?;
@@ -689,7 +688,7 @@ fn find_account_password(passwords: &Vec<Password>, account_provider: &AccountPr
 	None
 }
 
-impl ChainNotify for Provider {
+impl<BC: ClientBackend> ChainNotify for Provider<BC> {
 	fn new_blocks(&self, new_blocks: NewBlocks) {
 		if new_blocks.imported.is_empty() || new_blocks.has_more_blocks_to_import { return }
 			trace!(target: "privatetx", "New blocks imported, try to prune the queue");

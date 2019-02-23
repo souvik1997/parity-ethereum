@@ -19,7 +19,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ethcore::client::ClientIoMessage;
+use ethcore::client::{ClientIoMessage, ClientBackend};
 use sync::LightSync;
 use io::{IoContext, IoHandler, TimerToken};
 
@@ -54,12 +54,12 @@ pub struct QueueCull<T> {
 	pub executor: Executor,
 }
 
-impl<T: LightChainClient + 'static> IoHandler<ClientIoMessage> for QueueCull<T> {
-	fn initialize(&self, io: &IoContext<ClientIoMessage>) {
+impl<T: LightChainClient + 'static, BC: ClientBackend> IoHandler<ClientIoMessage<BC>> for QueueCull<T> {
+	fn initialize(&self, io: &IoContext<ClientIoMessage<BC>>) {
 		io.register_timer(TOKEN, TIMEOUT).expect("Error registering timer");
 	}
 
-	fn timeout(&self, _io: &IoContext<ClientIoMessage>, timer: TimerToken) {
+	fn timeout(&self, _io: &IoContext<ClientIoMessage<BC>>, timer: TimerToken) {
 		if timer != TOKEN { return }
 
 		let senders = self.txq.read().queued_senders();

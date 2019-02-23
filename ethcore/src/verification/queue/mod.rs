@@ -17,6 +17,8 @@
 //! A queue of blocks. Sits between network or other I/O and the `BlockChain`.
 //! Sorts them ready for blockchain insertion.
 
+use rich_phantoms::PhantomCovariantAlwaysSendSync as SafePhantomData;
+use std::marker::PhantomData;
 use std::thread::{self, JoinHandle};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
@@ -29,7 +31,7 @@ use io::*;
 use error::{BlockError, ImportErrorKind, ErrorKind, Error};
 use engines::EthEngine;
 use state::backend::Backend;
-use client::ClientIoMessage;
+use client::{ClientIoMessage, ClientBackend};
 
 use self::kind::{BlockLike, Kind};
 
@@ -137,12 +139,12 @@ struct Sizes {
 
 /// A queue of items to be verified. Sits between network or other I/O and the `BlockChain`.
 /// Keeps them in the same order as inserted, minus invalid items.
-pub struct VerificationQueue<K: Kind, B: Backend + Clone + 'static> {
+pub struct VerificationQueue<K: Kind, B: ClientBackend> {
 	engine: Arc<EthEngine<B>>,
 	more_to_verify: Arc<Condvar>,
 	verification: Arc<Verification<K>>,
 	deleting: Arc<AtomicBool>,
-	ready_signal: Arc<QueueSignal>,
+	ready_signal: Arc<QueueSignal<B>>,
 	empty: Arc<Condvar>,
 	processing: RwLock<HashMap<H256, U256>>, // hash to difficulty
 	ticks_since_adjustment: AtomicUsize,
@@ -154,13 +156,14 @@ pub struct VerificationQueue<K: Kind, B: Backend + Clone + 'static> {
 	total_difficulty: RwLock<U256>,
 }
 
-struct QueueSignal {
+struct QueueSignal<BC: ClientBackend> {
 	deleting: Arc<AtomicBool>,
 	signalled: AtomicBool,
-	message_channel: Mutex<IoChannel<ClientIoMessage>>,
+	message_channel: Mutex<IoChannel<ClientIoMessage<BC>>>,
+	_phantom: SafePhantomData<BC>,
 }
 
-impl QueueSignal {
+impl<BC: ClientBackend> QueueSignal<BC> {
 	fn set_sync(&self) {
 		// Do not signal when we are about to close
 		if self.deleting.load(AtomicOrdering::Relaxed) {
@@ -204,9 +207,9 @@ struct Verification<K: Kind> {
 	check_seal: bool,
 }
 
-impl<K: Kind, B: Backend + Clone + 'static> VerificationQueue<K, B> {
+impl<K: Kind, B: ClientBackend> VerificationQueue<K, B> {
 	/// Creates a new queue instance.
-	pub fn new(config: Config, engine: Arc<EthEngine<B>>, message_channel: IoChannel<ClientIoMessage>, check_seal: bool) -> Self {
+	pub fn new(config: Config, engine: Arc<EthEngine<B>>, message_channel: IoChannel<ClientIoMessage<B>>, check_seal: bool) -> Self {
 		let verification = Arc::new(Verification {
 			unverified: Mutex::new(VecDeque::new()),
 			verifying: Mutex::new(VecDeque::new()),
@@ -225,6 +228,7 @@ impl<K: Kind, B: Backend + Clone + 'static> VerificationQueue<K, B> {
 			deleting: deleting.clone(),
 			signalled: AtomicBool::new(false),
 			message_channel: Mutex::new(message_channel),
+			_phantom: PhantomData,
 		});
 		let empty = Arc::new(Condvar::new());
 		let scale_verifiers = config.verifier_settings.scale_verifiers;
@@ -295,7 +299,7 @@ impl<K: Kind, B: Backend + Clone + 'static> VerificationQueue<K, B> {
 		verification: Arc<Verification<K>>,
 		engine: Arc<EthEngine<B>>,
 		wait: Arc<Condvar>,
-		ready: Arc<QueueSignal>,
+		ready: Arc<QueueSignal<B>>,
 		empty: Arc<Condvar>,
 		state: Arc<(Mutex<State>, Condvar)>,
 		id: usize,
@@ -708,7 +712,7 @@ impl<K: Kind, B: Backend + Clone + 'static> VerificationQueue<K, B> {
 	}
 }
 
-impl<K: Kind, B: Backend + Clone + 'static> Drop for VerificationQueue<K, B> {
+impl<K: Kind, B: ClientBackend> Drop for VerificationQueue<K, B> {
 	fn drop(&mut self) {
 		trace!(target: "shutdown", "[VerificationQueue] Closing...");
 		self.clear();

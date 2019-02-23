@@ -31,6 +31,7 @@ use ethcore::error::{ImportErrorKind, ErrorKind as EthcoreErrorKind, Error as Et
 use ethcore::miner::Miner;
 use ethcore::verification::queue::VerifierSettings;
 use ethcore::verification::queue::kind::blocks::Unverified;
+use ethcore::state_db::StateDB;
 use ethcore_service::ClientService;
 use cache::CacheConfig;
 use informant::{Informant, FullNodeInformantData, MillisecondDuration};
@@ -498,7 +499,7 @@ fn start_client(
 	cache_config: CacheConfig,
 	require_fat_db: bool,
 	max_round_blocks_to_import: usize,
-) -> Result<ClientService, String> {
+) -> Result<ClientService<StateDB>, String> {
 
 	// load spec file
 	let spec = spec.spec(&dirs.cache)?;

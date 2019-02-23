@@ -50,8 +50,8 @@ fn send_private_transaction() {
 	let mut net = TestNet::with_spec_and_accounts(2, SyncConfig::default(), seal_spec, Some(ap.clone()));
 	let client0 = net.peer(0).chain.clone();
 	let client1 = net.peer(1).chain.clone();
-	let io_handler0: Arc<IoHandler<ClientIoMessage>> = Arc::new(TestIoHandler::new(net.peer(0).chain.clone()));
-	let io_handler1: Arc<IoHandler<ClientIoMessage>> = Arc::new(TestIoHandler::new(net.peer(1).chain.clone()));
+	let io_handler0: Arc<IoHandler<ClientIoMessage<StateDB>>> = Arc::new(TestIoHandler::new(net.peer(0).chain.clone()));
+	let io_handler1: Arc<IoHandler<ClientIoMessage<StateDB>>> = Arc::new(TestIoHandler::new(net.peer(1).chain.clone()));
 
 	net.peer(0).miner.set_author(s0.address(), Some("".into())).unwrap();
 	net.peer(1).miner.set_author(s1.address(), Some("".into())).unwrap();
