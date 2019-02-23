@@ -750,14 +750,14 @@ mod tests {
 		let b = OpenBlock::new(engine, Default::default(), false, db, &genesis_header, last_hashes.clone(), Address::zero(), (3141562.into(), 31415620.into()), vec![], false, &mut Vec::new().into_iter()).unwrap()
 			.close_and_lock().unwrap().seal(engine, vec![]).unwrap();
 		let orig_bytes = b.rlp_bytes();
-		let orig_db = { let mut d = b.drain().state.drop().1; d.persist(); d.base() };
+		let orig_db = b.drain().state.drop().1.base();
 
 		let db = spec.ensure_db_good(get_temp_state_db(), &Default::default()).unwrap();
 		let e = enact_and_seal(orig_bytes.clone(), engine, false, db, &genesis_header, last_hashes, Default::default()).unwrap();
 
 		assert_eq!(e.rlp_bytes(), orig_bytes);
 
-		let db = { let mut d = e.drain().state.drop().1; d.persist(); d.base() };
+		let db = e.drain().state.drop().1.base();
 		assert_eq!(orig_db.journal_db().keys(), db.journal_db().keys());
 		assert!(orig_db.journal_db().keys().iter().filter(|k| orig_db.journal_db().get(k.0) != db.journal_db().get(k.0)).next() == None);
 	}
@@ -781,7 +781,7 @@ mod tests {
 		let b = open_block.close_and_lock().unwrap().seal(engine, vec![]).unwrap();
 
 		let orig_bytes = b.rlp_bytes();
-		let orig_db = { let mut d = b.drain().state.drop().1; d.persist(); d.base() };
+		let orig_db = b.drain().state.drop().1.base();
 
 		let db = spec.ensure_db_good(get_temp_state_db(), &Default::default()).unwrap();
 		let e = enact_and_seal(orig_bytes.clone(), engine, false, db, &genesis_header, last_hashes, Default::default()).unwrap();
@@ -791,7 +791,7 @@ mod tests {
 		let uncles = view!(BlockView, &bytes).uncles();
 		assert_eq!(uncles[1].extra_data(), b"uncle2");
 
-		let db = { let mut d = e.drain().state.drop().1; d.persist(); d.base() };
+		let db = e.drain().state.drop().1.base();
 		assert_eq!(orig_db.journal_db().keys(), db.journal_db().keys());
 		assert!(orig_db.journal_db().keys().iter().filter(|k| orig_db.journal_db().get(k.0) != db.journal_db().get(k.0)).next() == None);
 	}

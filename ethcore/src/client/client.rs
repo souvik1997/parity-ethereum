@@ -1253,7 +1253,6 @@ impl<BC: ClientBackend> CoreClient<BC> {
 		// already-imported block of the same number.
 		// TODO: Prove it with a test.
 		let mut prove_state = block.state.drop().1;
-		prove_state.persist();
 		let mut state = prove_state.base();
 
 		// check epoch end signal, potentially generating a proof on the current

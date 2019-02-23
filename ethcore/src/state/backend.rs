@@ -249,12 +249,19 @@ impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> HashDB<KeccakHasher, DBVa
 	}
 
 	fn get(&self, key: &H256) -> Option<DBValue> {
-		match self.base.as_hashdb().get(key) {
+		match self.changed.get(key) {
 			Some(val) => {
-				self.proof.lock().insert(val.clone());
 				Some(val)
 			}
-			None => self.changed.get(key)
+			None => {
+				match self.base.as_hashdb().get(key) {
+					Some(val) => {
+						self.proof.lock().insert(val.clone());
+						Some(val)
+					}
+					None => None
+				}
+			}
 		}
 	}
 
@@ -263,11 +270,14 @@ impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> HashDB<KeccakHasher, DBVa
 	}
 
 	fn insert(&mut self, value: &[u8]) -> H256 {
-		self.changed.insert(value)
+		let h = self.changed.insert(value);
+		self.base.as_hashdb_mut().insert(value);
+		h
 	}
 
 	fn emplace(&mut self, key: H256, value: DBValue) {
-		self.changed.emplace(key, value)
+		self.changed.emplace(key, value.clone());
+		self.base.as_hashdb_mut().emplace(key, value);
 	}
 
 	fn remove(&mut self, key: &H256) {
@@ -317,13 +327,6 @@ impl<H: AsHashDB<KeccakHasher, DBValue>> Proving<H> {
 	/// Like extract_proof, but does not consume `self`
 	pub fn copy_proof(&self) -> Proof {
 		Proof::new(self.proof.lock().iter().map(|v| ProofElement::new(v.clone())).collect())
-	}
-
-	/// Write saved values to underlying storage
-	pub fn persist(&mut self) {
-		for (changed_key, _) in self.changed.keys() {
-			self.base.as_hashdb_mut().insert(&self.changed.get(&changed_key).expect("just got key, should not change"));
-		}
 	}
 
 	/// Consume backend and return base object

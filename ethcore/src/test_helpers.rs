@@ -184,7 +184,6 @@ pub fn generate_dummy_client_with_spec_accounts_and_data<F>(test_spec: F, accoun
 
 		last_header = view!(BlockView, &b.rlp_bytes()).header();
 		let mut prove_db = b.drain().state.drop().1;
-		prove_db.persist();
 		db = prove_db.base();
 	}
 	client.flush_queue();

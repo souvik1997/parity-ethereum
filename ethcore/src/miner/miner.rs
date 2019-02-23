@@ -1270,7 +1270,6 @@ impl<B: ClientBackend> miner::MinerService for Miner<B> {
 			let account_start_nonce = cloned.account_start_nonce();
 			let factories = cloned.factories();
 			let mut prove_db = cloned.drop().1;
-			prove_db.persist();
 			let db = prove_db.base();
 			State::from_existing(db, root, account_start_nonce, factories).expect("Should create state")
 		}, latest_block_number)
