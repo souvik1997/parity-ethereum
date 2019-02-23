@@ -398,6 +398,7 @@ impl Configuration {
 				max_round_blocks_to_import: self.args.arg_max_round_blocks_to_import,
 				on_demand_retry_count: self.args.arg_on_demand_retry_count,
 				on_demand_inactive_time_limit: self.args.arg_on_demand_inactive_time_limit,
+				stateless: self.args.flag_stateless,
 			};
 			Cmd::Run(run_cmd)
 		};
@@ -829,8 +830,8 @@ impl Configuration {
 				let mut apis = self.args.arg_ipcapi.clone().unwrap_or(self.args.arg_ipc_apis.clone());
 				if self.args.flag_geth {
 					if !apis.is_empty() {
- 						apis.push_str(",");
- 					}
+						apis.push_str(",");
+					}
 					apis.push_str("personal");
 				}
 				apis.parse()?
@@ -1443,6 +1444,7 @@ mod tests {
 			max_round_blocks_to_import: 12,
 			on_demand_retry_count: None,
 			on_demand_inactive_time_limit: None,
+			stateless: false,
 		};
 		expected.secretstore_conf.enabled = cfg!(feature = "secretstore");
 		expected.secretstore_conf.http_enabled = cfg!(feature = "secretstore");

@@ -250,6 +250,10 @@ usage! {
 			"--light",
 			"Experimental: run in light client mode. Light clients synchronize a bare minimum of data and fetch necessary data on-demand from the network. Much lower in storage, potentially higher in bandwidth. Has no effect with subcommands.",
 
+			FLAG flag_stateless: (bool) = false, or |c: &Config| c.parity.as_ref()?.stateless,
+			"--stateless",
+			"Experimental: run in stateless client mode",
+
 			FLAG flag_no_hardcoded_sync: (bool) = false, or |c: &Config| c.parity.as_ref()?.no_hardcoded_sync,
 			"--no-hardcoded-sync",
 			"By default, if there is no existing database the light client will automatically jump to a block hardcoded in the chain's specifications. This disables this feature.",
@@ -891,7 +895,7 @@ usage! {
 			"--whisper",
 			"Enable the Whisper network.",
 
- 			ARG arg_whisper_pool_size: (usize) = 10usize, or |c: &Config| c.whisper.as_ref()?.pool_size.clone(),
+			ARG arg_whisper_pool_size: (usize) = 10usize, or |c: &Config| c.whisper.as_ref()?.pool_size.clone(),
 			"--whisper-pool-size=[MB]",
 			"Target size of the whisper message pool in megabytes.",
 
@@ -1142,6 +1146,7 @@ struct Operating {
 	keys_path: Option<String>,
 	identity: Option<String>,
 	light: Option<bool>,
+	stateless: Option<bool>,
 	no_persistent_txqueue: Option<bool>,
 	no_hardcoded_sync: Option<bool>,
 
@@ -1625,6 +1630,7 @@ mod tests {
 			arg_keys_path: "$HOME/.parity/keys".into(),
 			arg_identity: "".into(),
 			flag_light: false,
+			flag_stateless: false,
 			flag_no_hardcoded_sync: false,
 			flag_no_persistent_txqueue: false,
 			flag_force_direct: false,
@@ -1909,6 +1915,7 @@ mod tests {
 				no_hardcoded_sync: None,
 				no_persistent_txqueue: None,
 				_legacy_public_node: None,
+				stateless: None,
 			}),
 			account: Some(Account {
 				unlock: Some(vec!["0x1".into(), "0x2".into(), "0x3".into()]),

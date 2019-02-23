@@ -139,6 +139,7 @@ pub struct RunCmd {
 	pub max_round_blocks_to_import: usize,
 	pub on_demand_retry_count: Option<usize>,
 	pub on_demand_inactive_time_limit: Option<u64>,
+	pub stateless: bool,
 }
 
 // node info fetcher for the local store.
@@ -1420,7 +1421,9 @@ pub fn execute<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>,
 	where Cr: Fn(String) + 'static + Send,
 		Rr: Fn() + 'static + Send
 {
-	if cmd.light {
+	if cmd.stateless {
+		execute_stateless_impl(cmd, logger, on_client_rq, on_updater_rq)
+	} else if cmd.light {
 		execute_light_impl(cmd, logger)
 	} else {
 		execute_impl(cmd, logger, on_client_rq, on_updater_rq)
