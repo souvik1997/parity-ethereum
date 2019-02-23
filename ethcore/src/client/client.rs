@@ -1007,6 +1007,8 @@ impl<BC: ClientBackend> CoreClient<BC> {
 					continue;
 				}
 
+				let block_seal = block.header.seal().into();
+				let contains_proof = block.proof.is_some();
 				match self.check_and_lock_block(block) {
 					Ok(closed_block) => {
 						if self.engine.is_proposal(&header) {
@@ -1017,7 +1019,15 @@ impl<BC: ClientBackend> CoreClient<BC> {
 
 							let transactions_len = closed_block.transactions().len();
 
-							let route = self.commit_block(closed_block, &header, encoded::Block::new(bytes));
+							let route = {
+								if contains_proof {
+									self.commit_block(closed_block, &header, encoded::Block::new(bytes))
+								} else {
+									info!(target: "client", "Pre-verified block {} did not have witness data. Using generated witness", hash);
+									let sealed_block = closed_block.clone().try_seal(&*self.engine, block_seal).expect("provided seal should be valid");
+									self.commit_block(closed_block, &header, encoded::Block::new(sealed_block.rlp_bytes()))
+								}
+							};
 							import_results.push(route);
 
 							self.report.write().accrue_block(&header, transactions_len);

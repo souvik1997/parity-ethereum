@@ -1057,6 +1057,7 @@ impl BlockChain {
 		}
 
 		assert!(self.pending_best_block.read().is_none());
+		assert!(block.view().proof().is_some());
 
 		let compressed_header = compress(block.header_view().rlp().as_raw(), blocks_swapper());
 		let compressed_body = compress(&Self::block_to_body(block.raw()), blocks_swapper());
