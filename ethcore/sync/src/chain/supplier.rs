@@ -17,6 +17,7 @@
 use bytes::Bytes;
 use ethcore::client::{BlockId, ClientBackend};
 use ethcore::header::BlockNumber;
+use ethcore::encoded;
 use ethereum_types::H256;
 use network::{self, PeerId};
 use parking_lot::RwLock;
@@ -203,6 +204,26 @@ impl SyncSupplier {
 
 	/// Respond to GetBlockBodies request
 	fn return_block_bodies<BC: ClientBackend>(io: &SyncIo<SyncIoBackend = BC>, r: &Rlp, peer_id: PeerId) -> RlpResponseResult {
+
+		fn encode_syncbody(body: encoded::Body, header: encoded::Header) -> Bytes {
+			let proof_rlp = body.proof_rlp();
+			let state_root_bytes = rlp::encode(&header.state_root());
+			let state_root_rlp = Rlp::new(&state_root_bytes);
+			let list_length = 2 + match proof_rlp { Some(_) => 2, None => 0 };
+			let mut stream = RlpStream::new_list(list_length);
+			stream.append_raw(body.transactions_rlp().as_raw(), 1);
+			stream.append_raw(body.uncles_rlp().as_raw(), 1);
+			match proof_rlp {
+				Some(proof_rlp) => {
+					stream.append_raw(proof_rlp.as_raw(), 1);
+					stream.append_raw(state_root_rlp.as_raw(), 1);
+				}
+				None => {}
+			};
+			stream.out()
+		}
+
+
 		let mut count = r.item_count().unwrap_or(0);
 		if count == 0 {
 			debug!(target: "sync", "Empty GetBlockBodies request, ignoring.");
@@ -212,8 +233,10 @@ impl SyncSupplier {
 		let mut added = 0usize;
 		let mut data = Bytes::new();
 		for i in 0..count {
-			if let Some(body) = io.chain().block_body(BlockId::Hash(r.val_at::<H256>(i)?)) {
-				data.append(&mut body.into_inner());
+			let block_hash = BlockId::Hash(r.val_at::<H256>(i)?);
+			if let (Some(body), Some(header)) = (io.chain().block_body(block_hash), io.chain().block_header(block_hash)) {
+				assert!(body.proof().is_some());
+				data.append(&mut encode_syncbody(body, header));
 				added += 1;
 			}
 		}

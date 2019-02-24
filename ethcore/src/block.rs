@@ -193,7 +193,11 @@ pub trait IsBlock {
 	/// Get all uncles in this block.
 	fn uncles(&self) -> &[Header] { &self.block().uncles }
 
-	fn proof(&self) -> Proof { self.state().clone().drop().1.extract_proof() }
+	fn proof(&self) -> Proof {
+		let p = self.state().clone().drop().1.extract_proof();
+		assert!(p.values.len() > 0);
+		p
+	}
 }
 
 /// Trait for an object that owns an `ExecutedBlock`

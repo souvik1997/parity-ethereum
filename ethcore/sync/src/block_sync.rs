@@ -143,7 +143,7 @@ pub struct BlockDownloader {
 impl BlockDownloader {
 	/// Create a new instance of syncing strategy.
 	/// For BlockSet::NewBlocks this won't reorganize to before the last kept state.
-	pub fn new(block_set: BlockSet, start_hash: &H256, start_number: BlockNumber) -> Self {
+	pub fn new(block_set: BlockSet, start_hash: &H256, start_number: BlockNumber, need_proofs: bool) -> Self {
 		let sync_receipts = match block_set {
 			BlockSet::NewBlocks => false,
 			BlockSet::OldBlocks => true
@@ -156,7 +156,7 @@ impl BlockDownloader {
 			last_imported_hash: start_hash.clone(),
 			last_round_start: start_number,
 			last_round_start_hash: start_hash.clone(),
-			blocks: BlockCollection::new(sync_receipts),
+			blocks: BlockCollection::new(sync_receipts, need_proofs),
 			imported_this_round: None,
 			round_parents: VecDeque::new(),
 			download_receipts: sync_receipts,
@@ -670,7 +670,7 @@ mod tests {
 		let spec = Spec::<StateDB>::new_test();
 		let genesis_hash = spec.genesis_header().hash();
 
-		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &genesis_hash, 0);
+		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &genesis_hash, 0, false);
 		downloader.state = State::ChainHead;
 
 		let mut chain = TestBlockChainClient::new();
@@ -752,7 +752,7 @@ mod tests {
 		let parent_hash = headers[1].hash();
 		headers.push(dummy_header(129, parent_hash));
 
-		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &H256::random(), 0);
+		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &H256::random(), 0, false);
 		downloader.state = State::Blocks;
 		downloader.blocks.reset_to(vec![headers[0].hash()]);
 
@@ -822,7 +822,7 @@ mod tests {
 			headers.push(header);
 		}
 
-		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &headers[0].hash(), 0);
+		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &headers[0].hash(), 0, false);
 		downloader.state = State::Blocks;
 		downloader.blocks.reset_to(vec![headers[0].hash()]);
 
@@ -886,7 +886,7 @@ mod tests {
 			headers.push(header);
 		}
 
-		let mut downloader = BlockDownloader::new(BlockSet::OldBlocks, &headers[0].hash(), 0);
+		let mut downloader = BlockDownloader::new(BlockSet::OldBlocks, &headers[0].hash(), 0, false);
 		downloader.state = State::Blocks;
 		downloader.blocks.reset_to(vec![headers[0].hash()]);
 
@@ -919,7 +919,7 @@ mod tests {
 		let spec = Spec::<StateDB>::new_test();
 		let genesis_hash = spec.genesis_header().hash();
 
-		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &genesis_hash, 0);
+		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &genesis_hash, 0, false);
 		downloader.state = State::ChainHead;
 
 		let mut chain = TestBlockChainClient::new();
@@ -959,7 +959,7 @@ mod tests {
 		let spec = Spec::<StateDB>::new_test();
 		let genesis_hash = spec.genesis_header().hash();
 
-		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &genesis_hash, 0);
+		let mut downloader = BlockDownloader::new(BlockSet::NewBlocks, &genesis_hash, 0, false);
 		downloader.state = State::ChainHead;
 
 		let mut chain = TestBlockChainClient::new();

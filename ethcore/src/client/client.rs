@@ -160,6 +160,7 @@ pub trait ClientBackend : Backend + Clone + 'static {
 	fn earliest_era(&self) -> Option<u64>;
 	fn journal_under(&mut self, batch: &mut DBTransaction, now: u64, id: &H256) -> ::std::io::Result<u32>;
 	fn mem_used(&self) -> usize;
+	fn need_proofs() -> bool;
 }
 
 impl ClientBackend for StateDB {
@@ -264,6 +265,10 @@ impl ClientBackend for StateDB {
 	fn mem_used(&self) -> usize {
 		StateDB::mem_used(self)
 	}
+
+	fn need_proofs() -> bool {
+		false
+	}
 }
 
 impl ClientBackend for ProofCheck {
@@ -322,6 +327,10 @@ impl ClientBackend for ProofCheck {
 
 	fn mem_used(&self) -> usize {
 		0
+	}
+
+	fn need_proofs() -> bool {
+		true
 	}
 }
 
@@ -1018,12 +1027,12 @@ impl<BC: ClientBackend> CoreClient<BC> {
 							imported_blocks.push(hash);
 
 							let transactions_len = closed_block.transactions().len();
-
+							debug!(target: "client", "Checked block {} with {} transactions", hash, transactions_len);
 							let route = {
 								if contains_proof {
 									self.commit_block(closed_block, &header, encoded::Block::new(bytes))
 								} else {
-									info!(target: "client", "Pre-verified block {} did not have witness data. Using generated witness", hash);
+									debug!(target: "client", "Pre-verified block {} did not have witness data. Using generated witness", hash);
 									let sealed_block = closed_block.clone().try_seal(&*self.engine, block_seal).expect("provided seal should be valid");
 									self.commit_block(closed_block, &header, encoded::Block::new(sealed_block.rlp_bytes()))
 								}
@@ -1550,6 +1559,10 @@ impl<BC: ClientBackend> CallContract for CoreClient<BC> {
 
 impl<BC: ClientBackend> ImportBlock for CoreClient<BC> {
 	fn import_block(&self, unverified: Unverified) -> EthcoreResult<H256> {
+		debug!(target: "client", "Importing block #{} with {}", unverified.header.clone().number(), match &unverified.proof {
+			Some(proof) => format!("proof ({} entries)", proof.values.len()),
+			None => "no proof".into(),
+		});
 		if self.chain.read().is_known(&unverified.hash()) {
 			bail!(EthcoreErrorKind::Import(ImportErrorKind::AlreadyInChain));
 		}
