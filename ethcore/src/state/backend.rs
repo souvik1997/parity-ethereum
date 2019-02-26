@@ -67,6 +67,15 @@ impl Proof {
 	}
 }
 
+impl ::std::fmt::Display for Proof {
+	fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+		use hash::keccak;
+		for v in &self.values {
+			writeln!(f, "[{}]: {:?} [length = {}]", keccak(&v.element), &v.element, v.element.len())?;
+		}
+		Ok(())
+	}
+}
 
 impl rlp::Decodable for ProofElement {
 	fn decode(d: &Rlp) -> Result<Self, DecoderError> {
