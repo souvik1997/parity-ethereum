@@ -52,7 +52,7 @@ pub enum Factory {
 }
 
 impl Default for Factory {
-	fn default() -> Self { Factory::Mangled }
+	fn default() -> Self { Factory::Plain }
 }
 
 impl Factory {
