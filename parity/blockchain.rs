@@ -26,16 +26,17 @@ use ethereum_types::{U256, H256, Address};
 use bytes::ToPretty;
 use rlp::PayloadInfo;
 use ethcore::account_provider::AccountProvider;
-use ethcore::client::{Mode, DatabaseCompactionProfile, VMType, Nonce, Balance, BlockChainClient, BlockId, BlockInfo, ImportBlock};
+use ethcore::client::{Mode, DatabaseCompactionProfile, VMType, Nonce, Balance, BlockChainClient, BlockId, BlockInfo, ImportBlock, ClientBackend};
 use ethcore::error::{ImportErrorKind, ErrorKind as EthcoreErrorKind, Error as EthcoreError};
 use ethcore::miner::Miner;
 use ethcore::verification::queue::VerifierSettings;
 use ethcore::verification::queue::kind::blocks::Unverified;
+use ethcore::state::backend::ProofCheck;
 use ethcore::state_db::StateDB;
 use ethcore::spec::Spec;
 use ethcore_service::ClientService;
 use cache::CacheConfig;
-use informant::{Informant, FullNodeInformantData, MillisecondDuration};
+use informant::{Informant, NodeInformantData, MillisecondDuration};
 use params::{SpecType, Pruning, Switch, tracing_switch_to_bool, fatdb_switch_to_bool};
 use helpers::{to_client_config, execute_upgrades};
 use dir::Directories;
@@ -100,6 +101,7 @@ pub struct ImportBlockchain {
 	pub with_color: bool,
 	pub verifier_settings: VerifierSettings,
 	pub light: bool,
+	pub stateless: bool,
 	pub max_round_blocks_to_import: usize,
 }
 
@@ -149,8 +151,11 @@ pub fn execute(cmd: BlockchainCmd) -> Result<(), String> {
 		BlockchainCmd::Import(import_cmd) => {
 			if import_cmd.light {
 				execute_import_light(import_cmd)
+			} else if import_cmd.stateless {
+				println!("Stateless");
+				execute_import::<ProofCheck>(import_cmd)
 			} else {
-				execute_import(import_cmd)
+				execute_import::<StateDB>(import_cmd)
 			}
 		}
 		BlockchainCmd::Export(export_cmd) => execute_export(export_cmd),
@@ -308,11 +313,11 @@ fn execute_import_light(cmd: ImportBlockchain) -> Result<(), String> {
 	Ok(())
 }
 
-fn execute_import(cmd: ImportBlockchain) -> Result<(), String> {
+fn execute_import<BC: ClientBackend>(cmd: ImportBlockchain) -> Result<(), String> {
 	let timer = Instant::now();
 
 	// load spec file
-	let spec: Spec<StateDB> = cmd.spec.spec(&cmd.dirs.cache)?;
+	let spec: Spec<BC> = cmd.spec.spec(&cmd.dirs.cache)?;
 
 	// load genesis hash
 	let genesis_hash = spec.genesis_header().hash();
@@ -411,7 +416,7 @@ fn execute_import(cmd: ImportBlockchain) -> Result<(), String> {
 	};
 
 	let informant = Arc::new(Informant::new(
-		FullNodeInformantData::new(
+		NodeInformantData::new(
 			client.clone(),
 			None,
 			None,
@@ -488,7 +493,7 @@ fn execute_import(cmd: ImportBlockchain) -> Result<(), String> {
 	Ok(())
 }
 
-fn start_client(
+fn start_client<BC: ClientBackend>(
 	dirs: Directories,
 	spec: SpecType,
 	pruning: Pruning,
@@ -500,7 +505,7 @@ fn start_client(
 	cache_config: CacheConfig,
 	require_fat_db: bool,
 	max_round_blocks_to_import: usize,
-) -> Result<ClientService<StateDB>, String> {
+) -> Result<ClientService<BC>, String> {
 
 	// load spec file
 	let spec = spec.spec(&dirs.cache)?;
@@ -580,7 +585,7 @@ fn start_client(
 }
 
 fn execute_export(cmd: ExportBlockchain) -> Result<(), String> {
-	let service = start_client(
+	let service = start_client::<StateDB>(
 		cmd.dirs,
 		cmd.spec,
 		cmd.pruning,
@@ -625,7 +630,7 @@ fn execute_export(cmd: ExportBlockchain) -> Result<(), String> {
 }
 
 fn execute_export_state(cmd: ExportState) -> Result<(), String> {
-	let service = start_client(
+	let service = start_client::<StateDB>(
 		cmd.dirs,
 		cmd.spec,
 		cmd.pruning,

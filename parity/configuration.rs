@@ -244,6 +244,7 @@ impl Configuration {
 				with_color: logger_config.color,
 				verifier_settings: self.verifier_settings(),
 				light: self.args.flag_light,
+				stateless: self.args.flag_stateless,
 				max_round_blocks_to_import: self.args.arg_max_round_blocks_to_import,
 			};
 			Cmd::Blockchain(BlockchainCmd::Import(import_cmd))
@@ -1272,6 +1273,7 @@ mod tests {
 			with_color: !cfg!(windows),
 			verifier_settings: Default::default(),
 			light: false,
+			stateless: false,
 			max_round_blocks_to_import: 12,
 		})));
 	}
