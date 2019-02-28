@@ -68,11 +68,17 @@ pub struct Block {
 impl Block {
 	/// Get the RLP-encoding of the block with the seal.
 	pub fn rlp_bytes(&self) -> Bytes {
-		let mut block_rlp = RlpStream::new_list(4);
+		let list_length = 3 + match self.proof { Some(_) => 1, None => 0};
+		let mut block_rlp = RlpStream::new_list(list_length);
 		block_rlp.append(&self.header);
 		block_rlp.append_list(&self.transactions);
 		block_rlp.append_list(&self.uncles);
-		block_rlp.append(&self.proof);
+		match self.proof {
+			Some(ref proof) => {
+				block_rlp.append(proof);
+			}
+			None => {}
+		};
 		block_rlp.out()
 	}
 }
@@ -82,7 +88,8 @@ impl Decodable for Block {
 		if rlp.as_raw().len() != rlp.payload_info()?.total() {
 			return Err(DecoderError::RlpIsTooBig);
 		}
-		if rlp.item_count()? != 3 {
+		let item_count = rlp.item_count()?;
+		if item_count != 3 && item_count != 4 {
 			return Err(DecoderError::RlpIncorrectListLen);
 		}
 
