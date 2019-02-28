@@ -65,6 +65,11 @@ impl Proof {
 			values: values
 		}
 	}
+
+	pub fn hash(&self) -> H256 {
+		use hash::keccak;
+		self.values.iter().map(|v| keccak(&v.element)).fold(H256::from(0), |a, b| a ^ b)
+	}
 }
 
 impl ::std::fmt::Display for Proof {
