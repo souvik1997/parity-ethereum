@@ -60,6 +60,7 @@ fn timestamp_checked_add(sys: SystemTime, d2: Duration) -> Result<SystemTime, Bl
 }
 
 /// Preprocessed block data gathered in `verify_block_unordered` call
+#[derive(Clone)]
 pub struct PreverifiedBlock {
 	/// Populated block header
 	pub header: Header,

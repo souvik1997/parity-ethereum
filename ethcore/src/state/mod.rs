@@ -480,6 +480,9 @@ impl<B: Backend> State<B> {
 	/// Destroy the current object and return root and database.
 	pub fn drop(mut self) -> (H256, B) {
 		self.propagate_to_global_cache();
+		assert!(self.checkpoints.borrow().is_empty());
+		let cache_is_dirty = self.cache.borrow().iter().filter(|&(_, ref a)| a.is_dirty()).nth(0).is_some();
+		assert!(!cache_is_dirty);
 		(self.root, self.db)
 	}
 

@@ -58,3 +58,6 @@ mod traits;
 
 mod chain_notify;
 mod private_notify;
+
+#[cfg(any(test, feature = "test-helpers"))]
+mod client_test_aux;

@@ -2850,6 +2850,63 @@ mod tests {
 			outcome: TransactionOutcome::StateRoot(state_root),
 		});
 	}
+
+	fn should_reliably_use_proof(rlp: &'static str, root: &'static str, count: usize) {
+		use rayon::prelude::*;
+		use block::enact_verified;
+		use rustc_hex::FromHex;
+		use verification::queue::kind::blocks::Unverified;
+		use verification::PreverifiedBlock;
+		use state::backend::ProofCheck;
+		use transaction::SignedTransaction;
+		use kvdb::DBValue;
+		use std::sync::Arc;
+		use ethereum_types::H256;
+		use spec::*;
+
+		let spec = Spec::<ProofCheck>::new_test();
+
+		let rlp_bytes = rlp.from_hex().unwrap();
+		let unverified = Unverified::from_rlp(rlp_bytes).expect("is valid rlp");
+		assert!(unverified.proof.is_some());
+		let preverified = PreverifiedBlock {
+			header: unverified.header,
+			transactions: unverified.transactions
+				.into_iter()
+				.map(SignedTransaction::new)
+				.collect::<Result<_,_>>().expect("failed to sign transactions"),
+			uncles: unverified.uncles,
+			bytes: unverified.bytes,
+			proof: unverified.proof,
+		};
+		let values: Vec<DBValue> = preverified.proof.as_ref().unwrap().values.iter().map(|v| v.element.clone()).collect();
+
+		let mut genesis_header = spec.genesis_header();
+		genesis_header.set_state_root(H256::from(root));
+		let last_hashes = Arc::new(vec![genesis_header.hash()]);
+		let successes: usize = (0..count).into_par_iter().map(|_| {
+			let proofcheck = ProofCheck::new(&values);
+			match enact_verified(preverified.clone(), &*spec.engine, false, proofcheck, &genesis_header, last_hashes.clone(), Default::default(), false, &mut Vec::new().into_iter()) {
+				Ok(_) => 1,
+				_ => 0
+			}
+		}).sum();
+		if successes < count {
+			println!("failed {}/{} times", count - successes, count);
+		}
+	}
+
+	#[test]
+	fn should_reliably_use_proof_132637() {
+		use client::client_test_aux;
+		should_reliably_use_proof(client_test_aux::BLOCK_132637_MAINNET_RLP, "0x6dea7f3097b1230df4d055cf9a9b02e97d364f7e4eb4003ab7bb5895aa84de43", 1000);
+	}
+
+	#[test]
+	fn should_reliably_use_proof_129626() {
+		use client::client_test_aux;
+		should_reliably_use_proof(client_test_aux::BLOCK_129626_MAINNET_RLP, "0x9a3bcd1edafff89d64fa8b76886acdd9cdbb7198efd55951f7718073eca88f71", 1000);
+	}
 }
 
 /// Queue some items to be processed by IO client.
