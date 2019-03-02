@@ -479,8 +479,9 @@ impl Account {
 
 	/// Commit the `storage_changes` to the backing DB and update `storage_root`.
 	pub fn commit_storage(&mut self, trie_factory: &TrieFactory, db: &mut HashDB<KeccakHasher, DBValue>) -> TrieResult<()> {
+		use itertools::Itertools;
 		let mut t = trie_factory.from_existing(db, &mut self.storage_root)?;
-		for (k, v) in self.storage_changes.drain() {
+		for (k, v) in self.storage_changes.drain().sorted_by(|a, b| a.0.cmp(&b.0)) {
 			// cast key and value to trait type,
 			// so we can call overloaded `to_bytes` method
 			match v.is_zero() {
@@ -625,7 +626,7 @@ mod tests {
 		assert!(raw.len() > compact_vec.len());
 		let again_raw = decompress(&compact_vec, snapshot_swapper());
 		assert_eq!(raw, again_raw.into_vec());
-    }
+		}
 
 	#[test]
 	fn storage_at() {

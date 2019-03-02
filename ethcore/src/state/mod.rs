@@ -879,10 +879,11 @@ impl<B: Backend> State<B> {
 
 	/// Commits our cached account changes into the trie.
 	pub fn commit(&mut self) -> Result<(), Error> {
+		use itertools::Itertools;
 		assert!(self.checkpoints.borrow().is_empty());
 		// first, commit the sub trees.
 		let mut accounts = self.cache.borrow_mut();
-		for (address, ref mut a) in accounts.iter_mut().filter(|&(_, ref a)| a.is_dirty()) {
+		for (address, ref mut a) in accounts.iter_mut().filter(|&(_, ref a)| a.is_dirty()).sorted_by(|a, b| a.0.cmp(b.0)) {
 			if let Some(ref mut account) = a.account {
 				let addr_hash = account.address_hash(address);
 				{
@@ -898,7 +899,7 @@ impl<B: Backend> State<B> {
 
 		{
 			let mut trie = self.factories.trie.from_existing(self.db.as_hashdb_mut(), &mut self.root)?;
-			for (address, ref mut a) in accounts.iter_mut().filter(|&(_, ref a)| a.is_dirty()) {
+			for (address, ref mut a) in accounts.iter_mut().filter(|&(_, ref a)| a.is_dirty()).sorted_by(|a, b| a.0.cmp(b.0)) {
 				a.state = AccountState::Committed;
 				match a.account {
 					Some(ref mut account) => {
