@@ -270,10 +270,10 @@ impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> HashDB<KeccakHasher, DBVa
 			None => {
 				match self.base.as_hashdb().get(key) {
 					Some(val) => {
-						let hash = hash::keccak(&val);
-						if hash != *key {
-							panic!("Key does not match hash, proof will not be valid!");
-						}
+						debug_assert!({
+							let hash = hash::keccak(&val);
+							hash == *key
+						});
 						self.proof.lock().insert(val.clone());
 						Some(val)
 					}
