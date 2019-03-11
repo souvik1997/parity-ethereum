@@ -27,7 +27,7 @@ use bytes::Bytes;
 use itertools::Itertools;
 use journaldb;
 use trie::{TrieSpec, TrieFactory, Trie};
-use kvdb::{DBValue, KeyValueDB, DBTransaction};
+use kvdb::{DBValue, KeyValueDB, DBTransaction, DBStats};
 
 // other
 use ethereum_types::{H256, Address, U256};
@@ -105,14 +105,16 @@ pub struct ClientReport {
 	pub gas_processed: U256,
 	/// Memory used by state DB
 	pub state_db_mem: usize,
+	pub db_stats: DBStats,
 }
 
 impl ClientReport {
 	/// Alter internal reporting to reflect the additional `block` has been processed.
-	pub fn accrue_block(&mut self, header: &Header, transactions: usize) {
+	pub fn accrue_block(&mut self, header: &Header, transactions: usize, db_stats: DBStats) {
 		self.blocks_imported += 1;
 		self.transactions_applied += transactions;
 		self.gas_processed = self.gas_processed + *header.gas_used();
+		self.db_stats = db_stats;
 	}
 }
 
@@ -127,6 +129,7 @@ impl<'a> ::std::ops::Sub<&'a ClientReport> for ClientReport {
 		self.transactions_applied -= other.transactions_applied;
 		self.gas_processed = self.gas_processed - other.gas_processed;
 		self.state_db_mem = higher_mem - lower_mem;
+		self.db_stats -= &other.db_stats;
 
 		self
 	}
@@ -306,7 +309,7 @@ impl Importer {
 							let route = self.commit_block(closed_block, &header, encoded::Block::new(bytes), client);
 							import_results.push(route);
 
-							client.report.write().accrue_block(&header, transactions_len);
+							client.report.write().accrue_block(&header, transactions_len, client.db.read().key_value().stats().unwrap_or(DBStats::default()));
 						}
 					},
 					Err(err) => {

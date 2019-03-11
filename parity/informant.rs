@@ -300,10 +300,14 @@ impl<T: InformantData> Informant<T> {
 						paint(White.bold(), format!("{:>8}", format!("#{}", chain_info.best_block_number))),
 						paint(White.bold(), format!("{}", chain_info.best_block_hash)),
 						if self.target.executes_transactions() {
-							format!("{} blk/s {} tx/s {} Mgas/s",
-								paint(Yellow.bold(), format!("{:7.2}", (client_report.blocks_imported * 1000) as f64 / elapsed.as_milliseconds() as f64)),
-								paint(Yellow.bold(), format!("{:6.1}", (client_report.transactions_applied * 1000) as f64 / elapsed.as_milliseconds() as f64)),
-								paint(Yellow.bold(), format!("{:6.1}", (client_report.gas_processed / 1000).low_u64() as f64 / elapsed.as_milliseconds() as f64))
+							format!("{} blk/s {} tx/s {} Mgas/s {} dbWriteOps/blk {} dbReadOps/blk {} dbWriteBytes/blk {} dbReadBytes/blk",
+											paint(Yellow.bold(), format!("{:7.2}", (client_report.blocks_imported * 1000) as f64 / elapsed.as_milliseconds() as f64)),
+											paint(Yellow.bold(), format!("{:6.1}", (client_report.transactions_applied * 1000) as f64 / elapsed.as_milliseconds() as f64)),
+											paint(Yellow.bold(), format!("{:6.1}", (client_report.gas_processed / 1000).low_u64() as f64 / elapsed.as_milliseconds() as f64)),
+											paint(Yellow.bold(), format!("{:3.4}", client_report.db_stats.write_ops as f64 / client_report.blocks_imported as f64)),
+											paint(Yellow.bold(), format!("{:3.4}", client_report.db_stats.read_ops as f64 / client_report.blocks_imported as f64)),
+											paint(Yellow.bold(), format!("{:5.4}", client_report.db_stats.write_bytes as f64 / client_report.blocks_imported as f64)),
+											paint(Yellow.bold(), format!("{:5.4}", client_report.db_stats.read_bytes as f64 / client_report.blocks_imported as f64)),
 							)
 						} else {
 							format!("{} hdr/s",

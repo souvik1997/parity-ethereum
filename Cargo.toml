@@ -122,21 +122,25 @@ debug = false
 
 [workspace]
 members = [
-	"chainspec",
-	"ethcore/wasm/run",
-	"ethcore/types",
-	"ethkey/cli",
-	"ethstore/cli",
-	"evmbin",
-	"miner",
-	"parity-clib",
-	"whisper",
-	"whisper/cli",
-	"util/triehash-ethereum",
-	"util/keccak-hasher",
-	"util/patricia-trie-ethereum",
-	"util/fastmap",
+  "chainspec",
+  "ethcore/wasm/run",
+  "ethcore/types",
+  "ethkey/cli",
+  "ethstore/cli",
+  "evmbin",
+  "miner",
+  "parity-clib",
+  "whisper",
+  "whisper/cli",
+  "util/triehash-ethereum",
+  "util/keccak-hasher",
+  "util/patricia-trie-ethereum",
+  "util/fastmap",
 ]
 
 [patch.crates-io]
 heapsize = { git = "https://github.com/cheme/heapsize.git", branch = "ec-macfix" }
+patricia-trie = { path = "../parity-common/patricia_trie" }
+kvdb = { path = "../parity-common/kvdb" }
+kvdb-rocksdb = { path = "../parity-common/kvdb-rocksdb" }
+kvdb-memorydb = { path = "../parity-common/kvdb-memorydb" }
