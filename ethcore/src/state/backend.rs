@@ -35,7 +35,8 @@ use rlp::{self, RlpStream, Rlp, DecoderError};
 
 #[derive(Default, Clone, Debug, PartialEq)]
 pub struct ProofElement {
-	pub element: DBValue
+	pub element: DBValue,
+	hash: H256,
 }
 
 impl From<ProofElement> for DBValue {
@@ -43,7 +44,12 @@ impl From<ProofElement> for DBValue {
 }
 
 impl ProofElement {
-	pub fn new(v: DBValue) -> Self { Self { element: v } }
+	pub fn new(v: DBValue) -> Self {
+		use hash::keccak;
+		let hash = keccak(&v);
+		Self { element: v, hash: hash }
+	}
+	pub fn hash(&self) -> H256 { self.hash }
 }
 
 #[derive(Default, Clone, Debug, PartialEq, RlpEncodableWrapper, RlpDecodableWrapper)]
@@ -68,7 +74,7 @@ impl Proof {
 
 	pub fn hash(&self) -> H256 {
 		use hash::keccak;
-		self.values.iter().map(|v| keccak(&v.element)).fold(H256::from(0), |a, b| a ^ b)
+		self.values.iter().map(|v| v.hash()).fold(H256::from(0), |a, b| a ^ b)
 	}
 }
 
