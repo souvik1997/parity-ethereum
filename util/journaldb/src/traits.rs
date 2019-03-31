@@ -23,7 +23,7 @@ use bytes::Bytes;
 use ethereum_types::H256;
 use hashdb::HashDB;
 use keccak_hasher::KeccakHasher;
-use kvdb::{self, DBTransaction, DBValue};
+use kvdb::{self, DBTransaction, DBValue, DBStats};
 
 /// A `HashDB` which can manage a short-term journal potentially containing many forks of mutually
 /// exclusive actions.
@@ -101,5 +101,9 @@ pub trait JournalDB: HashDB<KeccakHasher, DBValue> {
 		let mut batch = self.backing().transaction();
 		let res = self.inject(&mut batch)?;
 		self.backing().write(batch).map(|_| res).map_err(Into::into)
+	}
+
+	fn stats(&self) -> Option<DBStats> {
+		self.backing().stats()
 	}
 }

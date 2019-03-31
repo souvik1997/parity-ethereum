@@ -32,7 +32,7 @@
 //! related info.
 
 use std::cmp;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -42,16 +42,43 @@ use ethereum_types::{H256, U256, Address, Bloom};
 use factory::Factories;
 use hash::keccak;
 use header::{Header, ExtendedHeader};
+use kvdb::DBStats;
 use receipt::{Receipt, TransactionOutcome};
 use rlp::{Rlp, RlpStream, Encodable, Decodable, DecoderError, encode_list};
 use state_db::StateDB;
-use state::State;
+use state::{State, backend::Backend};
 use trace::Tracing;
-use transaction::{UnverifiedTransaction, SignedTransaction, Error as TransactionError};
+use transaction::{UnverifiedTransaction, SignedTransaction, Error as TransactionError, Action};
 use triehash::ordered_trie_root;
 use unexpected::{Mismatch, OutOfBounds};
 use verification::PreverifiedBlock;
 use vm::{EnvInfo, LastHashes};
+use serde::{Serialize};
+use serde_json;
+
+
+#[derive(Debug, Clone, Serialize)]
+pub enum TxType {
+	SimpleTransaction,
+	Contract
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TxStats {
+	db_stats: DBStats,
+	unique_accounts_touched: Vec<Address>,
+	transaction_type: TxType
+}
+
+#[derive(Default, Debug, Clone, Serialize)]
+pub struct BlockStats {
+	pub tx_stats: HashMap<H256, TxStats>,
+	pub initial_db_stats: DBStats,
+	pub final_db_stats: DBStats,
+	pub gas_used: U256,
+	pub on_disk_size: Option<u64>,
+	pub miner: Address,
+}
 
 /// A block, encoded as it is on the block chain.
 #[derive(Default, Debug, Clone, PartialEq)]
@@ -223,6 +250,7 @@ impl ::parity_machine::Transactions for ExecutedBlock {
 pub struct OpenBlock<'x> {
 	block: ExecutedBlock,
 	engine: &'x EthEngine,
+	pub block_stats: BlockStats,
 }
 
 /// Just like `OpenBlock`, except that we've applied `Engine::on_close_block`, finished up the non-seal header fields,
@@ -233,6 +261,7 @@ pub struct OpenBlock<'x> {
 pub struct ClosedBlock {
 	block: ExecutedBlock,
 	unclosed_state: State<StateDB>,
+	pub block_stats: BlockStats,
 }
 
 /// Just like `ClosedBlock` except that we can't reopen it and it's faster.
@@ -241,6 +270,7 @@ pub struct ClosedBlock {
 #[derive(Clone)]
 pub struct LockedBlock {
 	block: ExecutedBlock,
+	pub block_stats: BlockStats
 }
 
 /// A block that has a valid seal.
@@ -267,9 +297,15 @@ impl<'x> OpenBlock<'x> {
 	) -> Result<Self, Error> {
 		let number = parent.number() + 1;
 		let state = State::from_existing(db, parent.state_root().clone(), engine.account_start_nonce(number), factories)?;
+		let initial_block_stats = {
+			let mut b = BlockStats::default();
+			b.initial_db_stats = state.backend().db_stats();
+			b
+		};
 		let mut r = OpenBlock {
 			block: ExecutedBlock::new(state, last_hashes, tracing),
 			engine: engine,
+			block_stats: initial_block_stats,
 		};
 
 		r.block.header.set_parent_hash(parent.hash());
@@ -333,7 +369,31 @@ impl<'x> OpenBlock<'x> {
 		}
 
 		let env_info = self.env_info();
+
+		let prev_db_stats = self.block.state.backend().db_stats();
+		self.block.state.clear_touched_accounts();
 		let outcome = self.block.state.apply(&env_info, self.engine.machine(), &t, self.block.traces.is_enabled())?;
+		let after_db_stats = self.block.state.backend().db_stats();
+		let delta_db_stats = after_db_stats - &prev_db_stats;
+		let transaction_type = match t.action() {
+			Action::Create => {
+				TxType::Contract
+			},
+			Action::Call(address) => {
+				match self.block.state.code(&address).unwrap() {
+					Some(ref code) => {
+						if code.len() == 0 {
+							TxType::SimpleTransaction
+						} else {
+							TxType::Contract
+						}
+					},
+					None => TxType::SimpleTransaction,
+				}
+			}
+		};
+		self.block_stats.tx_stats.insert(t.hash(), TxStats { transaction_type: transaction_type, db_stats: delta_db_stats, unique_accounts_touched: self.block.state.touched_accounts().into_iter().collect() });
+		self.block.state.clear_touched_accounts();
 
 		self.block.transactions_set.insert(h.unwrap_or_else(||t.hash()));
 		self.block.transactions.push(t.into());
@@ -398,6 +458,7 @@ impl<'x> OpenBlock<'x> {
 		Ok(ClosedBlock {
 			block: locked.block,
 			unclosed_state,
+			block_stats: locked.block_stats
 		})
 	}
 
@@ -418,9 +479,11 @@ impl<'x> OpenBlock<'x> {
 			b
 		}));
 		s.block.header.set_gas_used(s.block.receipts.last().map_or_else(U256::zero, |r| r.gas_used));
+		s.block_stats.final_db_stats = s.block.state.backend().db_stats();
 
 		Ok(LockedBlock {
 			block: s.block,
+			block_stats: s.block_stats
 		})
 	}
 
@@ -449,6 +512,7 @@ impl ClosedBlock {
 	pub fn lock(self) -> LockedBlock {
 		LockedBlock {
 			block: self.block,
+			block_stats: self.block_stats,
 		}
 	}
 
@@ -460,6 +524,7 @@ impl ClosedBlock {
 		OpenBlock {
 			block: block,
 			engine: engine,
+			block_stats: self.block_stats
 		}
 	}
 }
@@ -703,7 +768,7 @@ mod tests {
 	) -> Result<SealedBlock, Error> {
 		let header = Unverified::from_rlp(block_bytes.clone())?.header;
 		Ok(enact_bytes(block_bytes, engine, tracing, db, parent, last_hashes, factories)?
-		   .seal(engine, header.seal().to_vec())?)
+			 .seal(engine, header.seal().to_vec())?)
 	}
 
 	#[test]

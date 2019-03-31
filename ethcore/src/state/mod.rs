@@ -314,6 +314,7 @@ pub struct State<B> {
 	checkpoints: RefCell<Vec<HashMap<Address, Option<AccountEntry>>>>,
 	account_start_nonce: U256,
 	factories: Factories,
+	touched_accounts: RefCell<HashSet<Address>>
 }
 
 #[derive(Copy, Clone)]
@@ -376,6 +377,7 @@ impl<B: Backend> State<B> {
 			checkpoints: RefCell::new(Vec::new()),
 			account_start_nonce: account_start_nonce,
 			factories: factories,
+			touched_accounts: RefCell::new(HashSet::new()),
 		}
 	}
 
@@ -391,7 +393,8 @@ impl<B: Backend> State<B> {
 			cache: RefCell::new(HashMap::new()),
 			checkpoints: RefCell::new(Vec::new()),
 			account_start_nonce: account_start_nonce,
-			factories: factories
+			factories: factories,
+			touched_accounts: RefCell::new(HashSet::new()),
 		};
 
 		Ok(state)
@@ -496,9 +499,14 @@ impl<B: Backend> State<B> {
 		&self.root
 	}
 
+	pub fn backend(&self) -> &B {
+		&self.db
+	}
+
 	/// Create a new contract at address `contract`. If there is already an account at the address
 	/// it will have its code reset, ready for `init_code()`.
 	pub fn new_contract(&mut self, contract: &Address, balance: U256, nonce_offset: U256) -> TrieResult<()> {
+		self.touched_accounts.borrow_mut().insert(*contract);
 		let original_storage_root = self.original_storage_root(contract)?;
 		let (nonce, overflow) = self.account_start_nonce.overflowing_add(nonce_offset);
 		if overflow {
@@ -511,11 +519,13 @@ impl<B: Backend> State<B> {
 
 	/// Remove an existing account.
 	pub fn kill_account(&mut self, account: &Address) {
+		self.touched_accounts.borrow_mut().insert(*account);
 		self.insert_cache(account, AccountEntry::new_dirty(None));
 	}
 
 	/// Determine whether an account exists.
 	pub fn exists(&self, a: &Address) -> TrieResult<bool> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		// Bloom filter does not contain empty accounts, so it is important here to
 		// check if account exists in the database directly before EIP-161 is in effect.
 		self.ensure_cached(a, RequireCache::None, false, |a| a.is_some())
@@ -523,29 +533,34 @@ impl<B: Backend> State<B> {
 
 	/// Determine whether an account exists and if not empty.
 	pub fn exists_and_not_null(&self, a: &Address) -> TrieResult<bool> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		self.ensure_cached(a, RequireCache::None, false, |a| a.map_or(false, |a| !a.is_null()))
 	}
 
 	/// Determine whether an account exists and has code or non-zero nonce.
 	pub fn exists_and_has_code_or_nonce(&self, a: &Address) -> TrieResult<bool> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		self.ensure_cached(a, RequireCache::CodeSize, false,
 			|a| a.map_or(false, |a| a.code_hash() != KECCAK_EMPTY || *a.nonce() != self.account_start_nonce))
 	}
 
 	/// Get the balance of account `a`.
 	pub fn balance(&self, a: &Address) -> TrieResult<U256> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		self.ensure_cached(a, RequireCache::None, true,
 			|a| a.as_ref().map_or(U256::zero(), |account| *account.balance()))
 	}
 
 	/// Get the nonce of account `a`.
 	pub fn nonce(&self, a: &Address) -> TrieResult<U256> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		self.ensure_cached(a, RequireCache::None, true,
 			|a| a.as_ref().map_or(self.account_start_nonce, |account| *account.nonce()))
 	}
 
 	/// Whether the base storage root of an account remains unchanged.
 	pub fn is_base_storage_root_unchanged(&self, a: &Address) -> TrieResult<bool> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		Ok(self.ensure_cached(a, RequireCache::None, true,
 			|a| a.as_ref().map(|account| account.is_base_storage_root_unchanged()))?
 			.unwrap_or(true))
@@ -553,12 +568,14 @@ impl<B: Backend> State<B> {
 
 	/// Get the storage root of account `a`.
 	pub fn storage_root(&self, a: &Address) -> TrieResult<Option<H256>> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		self.ensure_cached(a, RequireCache::None, true,
 			|a| a.as_ref().and_then(|account| account.storage_root()))
 	}
 
 	/// Get the original storage root since last commit of account `a`.
 	pub fn original_storage_root(&self, a: &Address) -> TrieResult<H256> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		Ok(self.ensure_cached(a, RequireCache::None, true,
 			|a| a.as_ref().map(|account| account.original_storage_root()))?
 			.unwrap_or(KECCAK_NULL_RLP))
@@ -566,6 +583,7 @@ impl<B: Backend> State<B> {
 
 	/// Get the value of storage at a specific checkpoint.
 	pub fn checkpoint_storage_at(&self, start_checkpoint_index: usize, address: &Address, key: &H256) -> TrieResult<Option<H256>> {
+		self.touched_accounts.borrow_mut().insert(*address);
 		#[must_use]
 		enum ReturnKind {
 			/// Use original storage at value at this address.
@@ -702,6 +720,7 @@ impl<B: Backend> State<B> {
 
 	/// Mutate storage of account `address` so that it is `value` for `key`.
 	pub fn storage_at(&self, address: &Address, key: &H256) -> TrieResult<H256> {
+		self.touched_accounts.borrow_mut().insert(*address);
 		self.storage_at_inner(
 			address,
 			key,
@@ -712,6 +731,7 @@ impl<B: Backend> State<B> {
 
 	/// Get the value of storage after last state commitment.
 	pub fn original_storage_at(&self, address: &Address, key: &H256) -> TrieResult<H256> {
+		self.touched_accounts.borrow_mut().insert(*address);
 		self.storage_at_inner(
 			address,
 			key,
@@ -722,24 +742,28 @@ impl<B: Backend> State<B> {
 
 	/// Get accounts' code.
 	pub fn code(&self, a: &Address) -> TrieResult<Option<Arc<Bytes>>> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		self.ensure_cached(a, RequireCache::Code, true,
 			|a| a.as_ref().map_or(None, |a| a.code().clone()))
 	}
 
 	/// Get an account's code hash.
 	pub fn code_hash(&self, a: &Address) -> TrieResult<Option<H256>> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		self.ensure_cached(a, RequireCache::None, true,
 			|a| a.as_ref().map(|a| a.code_hash()))
 	}
 
 	/// Get accounts' code size.
 	pub fn code_size(&self, a: &Address) -> TrieResult<Option<usize>> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		self.ensure_cached(a, RequireCache::CodeSize, true,
 			|a| a.as_ref().and_then(|a| a.code_size()))
 	}
 
 	/// Add `incr` to the balance of account `a`.
 	pub fn add_balance(&mut self, a: &Address, incr: &U256, cleanup_mode: CleanupMode) -> TrieResult<()> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		trace!(target: "state", "add_balance({}, {}): {}", a, incr, self.balance(a)?);
 		let is_value_transfer = !incr.is_zero();
 		if is_value_transfer || (cleanup_mode == CleanupMode::ForceCreate && !self.exists(a)?) {
@@ -755,6 +779,7 @@ impl<B: Backend> State<B> {
 
 	/// Subtract `decr` from the balance of account `a`.
 	pub fn sub_balance(&mut self, a: &Address, decr: &U256, cleanup_mode: &mut CleanupMode) -> TrieResult<()> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		trace!(target: "state", "sub_balance({}, {}): {}", a, decr, self.balance(a)?);
 		if !decr.is_zero() || !self.exists(a)? {
 			self.require(a, false)?.sub_balance(decr);
@@ -767,6 +792,8 @@ impl<B: Backend> State<B> {
 
 	/// Subtracts `by` from the balance of `from` and adds it to that of `to`.
 	pub fn transfer_balance(&mut self, from: &Address, to: &Address, by: &U256, mut cleanup_mode: CleanupMode) -> TrieResult<()> {
+		self.touched_accounts.borrow_mut().insert(*from);
+		self.touched_accounts.borrow_mut().insert(*to);
 		self.sub_balance(from, by, &mut cleanup_mode)?;
 		self.add_balance(to, by, cleanup_mode)?;
 		Ok(())
@@ -774,11 +801,13 @@ impl<B: Backend> State<B> {
 
 	/// Increment the nonce of account `a` by 1.
 	pub fn inc_nonce(&mut self, a: &Address) -> TrieResult<()> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		self.require(a, false).map(|mut x| x.inc_nonce())
 	}
 
 	/// Mutate storage of account `a` so that it is `value` for `key`.
 	pub fn set_storage(&mut self, a: &Address, key: H256, value: H256) -> TrieResult<()> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		trace!(target: "state", "set_storage({}:{:x} to {:x})", a, key, value);
 		if self.storage_at(a, &key)? != value {
 			self.require(a, false)?.set_storage(key, value)
@@ -790,12 +819,14 @@ impl<B: Backend> State<B> {
 	/// Initialise the code of account `a` so that it is `code`.
 	/// NOTE: Account should have been created with `new_contract`.
 	pub fn init_code(&mut self, a: &Address, code: Bytes) -> TrieResult<()> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		self.require_or_from(a, true, || Account::new_contract(0.into(), self.account_start_nonce, KECCAK_NULL_RLP), |_| {})?.init_code(code);
 		Ok(())
 	}
 
 	/// Reset the code of account `a` so that it is `code`.
 	pub fn reset_code(&mut self, a: &Address, code: Bytes) -> TrieResult<()> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		self.require_or_from(a, true, || Account::new_contract(0.into(), self.account_start_nonce, KECCAK_NULL_RLP), |_| {})?.reset_code(code);
 		Ok(())
 	}
@@ -1175,6 +1206,7 @@ impl<B: Backend> State<B> {
 
 	/// Replace account code and storage. Creates account if it does not exist.
 	pub fn patch_account(&self, a: &Address, code: Arc<Bytes>, storage: HashMap<H256, H256>) -> TrieResult<()> {
+		self.touched_accounts.borrow_mut().insert(*a);
 		Ok(self.require(a, false)?.reset_code_and_storage(code, storage))
 	}
 }
@@ -1224,6 +1256,14 @@ impl<B: Backend> State<B> {
 		let account_db = self.factories.accountdb.readonly(self.db.as_hashdb(), account_key);
 		acc.prove_storage(account_db.as_hashdb(), storage_key)
 	}
+
+	pub fn clear_touched_accounts(&mut self) {
+		self.touched_accounts.borrow_mut().clear();
+	}
+
+	pub fn touched_accounts(&self) -> HashSet<Address> {
+		self.touched_accounts.borrow().clone()
+	}
 }
 
 impl<B: Backend> fmt::Debug for State<B> {
@@ -1253,6 +1293,7 @@ impl Clone for State<StateDB> {
 			checkpoints: RefCell::new(Vec::new()),
 			account_start_nonce: self.account_start_nonce.clone(),
 			factories: self.factories.clone(),
+			touched_accounts: RefCell::new(HashSet::new()),
 		}
 	}
 }

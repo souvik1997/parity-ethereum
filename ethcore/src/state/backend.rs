@@ -29,7 +29,7 @@ use parking_lot::Mutex;
 use ethereum_types::{Address, H256};
 use memorydb::MemoryDB;
 use hashdb::{AsHashDB, HashDB};
-use kvdb::DBValue;
+use kvdb::{DBValue, DBStats};
 use keccak_hasher::KeccakHasher;
 
 /// State backend. See module docs for more details.
@@ -68,6 +68,10 @@ pub trait Backend: Send {
 	/// Check whether an account is known to be empty. Returns true if known to be
 	/// empty, false otherwise.
 	fn is_known_null(&self, address: &Address) -> bool;
+
+	fn db_stats(&self) -> DBStats {
+		return DBStats::default();
+	}
 }
 
 /// A raw backend used to check proofs of execution.

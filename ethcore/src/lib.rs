@@ -144,6 +144,12 @@ extern crate env_logger;
 
 pub extern crate ethstore;
 
+extern crate fs_extra;
+extern crate serde;
+extern crate serde_json;
+#[macro_use]
+extern crate serde_derive;
+
 #[macro_use]
 pub mod views;
 

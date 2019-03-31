@@ -413,6 +413,10 @@ impl UnverifiedTransaction {
 		};
 		Ok(())
 	}
+
+	pub fn action(&self) -> Action {
+		self.action.clone()
+	}
 }
 
 /// A `UnverifiedTransaction` with successfully recovered `sender`.
@@ -484,6 +488,10 @@ impl SignedTransaction {
 	/// Deconstructs this transaction back into `UnverifiedTransaction`
 	pub fn deconstruct(self) -> (UnverifiedTransaction, Address, Option<Public>) {
 		(self.transaction, self.sender, self.public)
+	}
+
+	pub fn action(&self) -> Action {
+		self.transaction.action()
 	}
 }
 
