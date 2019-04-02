@@ -165,6 +165,7 @@ pub trait ClientBackend : Backend + Clone + 'static {
 
 impl ClientBackend for StateDB {
 	fn create(db: &Arc<BlockChainDB>, check: Option<(&Spec<Self>, &Factories)>, pruning: journaldb::Algorithm, cache_size: usize) -> Result<Self, ::error::Error> {
+		info!(target: "stateless", "Creating stateful client backend");
 		let journal_db = journaldb::new(db.key_value().clone(), pruning, ::db::COL_STATE);
 		let mut state_db = StateDB::new(journal_db, cache_size);
 		match check {
@@ -273,6 +274,7 @@ impl ClientBackend for StateDB {
 
 impl ClientBackend for ProofCheck {
 	fn create(db: &Arc<BlockChainDB>, check: Option<(&Spec<Self>, &Factories)>, pruning: journaldb::Algorithm, cache_size: usize) -> Result<Self, ::error::Error> {
+		info!(target: "stateless", "Creating stateless client backend");
 		// We have to return something but this is invalid
 		Ok(Self::new(&vec![]))
 	}
