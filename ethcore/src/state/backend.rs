@@ -307,8 +307,9 @@ impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> HashDB<KeccakHasher, DBVa
 	fn remove(&mut self, key: &H256) {
 		// only remove from `changed`
 		if self.changed.contains(key) {
-			self.changed.remove(key)
+			self.changed.remove(key);
 		}
+		self.base.as_hashdb_mut().remove(key);
 	}
 }
 
