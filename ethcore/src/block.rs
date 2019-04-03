@@ -373,6 +373,8 @@ impl<'x> OpenBlock<'x> {
 		let prev_db_stats = self.block.state.backend().db_stats();
 		self.block.state.clear_touched_accounts();
 		let outcome = self.block.state.apply(&env_info, self.engine.machine(), &t, self.block.traces.is_enabled())?;
+		self.block.state.commit();
+		self.block.state.clear();
 		let after_db_stats = self.block.state.backend().db_stats();
 		let delta_db_stats = after_db_stats - &prev_db_stats;
 		let transaction_type = match t.action() {

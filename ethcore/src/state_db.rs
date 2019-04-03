@@ -419,53 +419,71 @@ impl state::Backend for StateDB {
 	}
 
 	fn add_to_account_cache(&mut self, addr: Address, data: Option<Account>, modified: bool) {
+		/*
 		self.local_cache.push(CacheQueueItem {
 			address: addr,
 			account: SyncAccount(data),
 			modified: modified,
 		})
+		*/
 	}
 
 	fn cache_code(&self, hash: H256, code: Arc<Vec<u8>>) {
+		/*
 		let mut cache = self.code_cache.lock();
 
 		cache.insert(hash, code);
+		*/
 	}
 
 	fn get_cached_account(&self, addr: &Address) -> Option<Option<Account>> {
+		/*
 		let mut cache = self.account_cache.lock();
 		if !Self::is_allowed(addr, &self.parent_hash, &cache.modifications) {
 			return None;
 		}
 		cache.accounts.get_mut(addr).map(|a| a.as_ref().map(|a| a.clone_basic()))
+		 */
+		None
 	}
 
 	fn get_cached<F, U>(&self, a: &Address, f: F) -> Option<U>
-		where F: FnOnce(Option<&mut Account>) -> U {
+	where F: FnOnce(Option<&mut Account>) -> U {
+		/*
 		let mut cache = self.account_cache.lock();
 		if !Self::is_allowed(a, &self.parent_hash, &cache.modifications) {
 			return None;
 		}
 		cache.accounts.get_mut(a).map(|c| f(c.as_mut()))
+		 */
+		None
 	}
 
 	fn get_cached_code(&self, hash: &H256) -> Option<Arc<Vec<u8>>> {
+		/*
 		let mut cache = self.code_cache.lock();
 
 		cache.get_mut(hash).map(|code| code.clone())
+		 */
+		None
 	}
 
 	fn note_non_null_account(&self, address: &Address) {
+		/*
 		trace!(target: "account_bloom", "Note account bloom: {:?}", address);
 		let mut bloom = self.account_bloom.lock();
 		bloom.set(&*keccak(address));
+		*/
 	}
 
 	fn is_known_null(&self, address: &Address) -> bool {
+		/*
 		trace!(target: "account_bloom", "Check account bloom: {:?}", address);
 		let bloom = self.account_bloom.lock();
 		let is_null = !bloom.check(&*keccak(address));
 		is_null
+		 */
+		false
 	}
 
 	fn db_stats(&self) -> DBStats {

@@ -52,7 +52,7 @@ mod as_hash_db_impls;
 pub mod overlaydb;
 
 /// Export the `JournalDB` trait.
-pub use self::traits::JournalDB;
+pub use self::traits::{JournalDB, JournalDBStats};
 
 /// Journal database operating strategy.
 #[derive(Debug, PartialEq, Clone, Copy)]

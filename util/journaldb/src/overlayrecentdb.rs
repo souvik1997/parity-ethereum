@@ -31,7 +31,7 @@ use memorydb::*;
 use parking_lot::RwLock;
 use fastmap::H256FastMap;
 use rlp::{Rlp, RlpStream, encode, decode, DecoderError, Decodable, Encodable};
-use super::{DB_PREFIX_LEN, LATEST_ERA_KEY, JournalDB, error_negatively_reference_hash};
+use super::{DB_PREFIX_LEN, LATEST_ERA_KEY, JournalDB, JournalDBStats, error_negatively_reference_hash};
 use util::DatabaseKey;
 
 /// Implementation of the `JournalDB` trait for a disk-backed database with a memory overlay
@@ -70,6 +70,7 @@ pub struct OverlayRecentDB {
 	backing: Arc<KeyValueDB>,
 	journal_overlay: Arc<RwLock<JournalOverlay>>,
 	column: Option<u32>,
+	stats: RwLock<JournalDBStats>,
 }
 
 struct DatabaseValue {
@@ -148,6 +149,7 @@ impl Clone for OverlayRecentDB {
 			backing: self.backing.clone(),
 			journal_overlay: self.journal_overlay.clone(),
 			column: self.column.clone(),
+			stats: RwLock::new(self.stats.read().clone()),
 		}
 	}
 }
@@ -161,6 +163,7 @@ impl OverlayRecentDB {
 			backing: backing,
 			journal_overlay: journal_overlay,
 			column: col,
+			stats: RwLock::new(JournalDBStats::default())
 		}
 	}
 
@@ -437,6 +440,10 @@ impl JournalDB for OverlayRecentDB {
 	fn consolidate(&mut self, with: MemoryDB<KeccakHasher, DBValue>) {
 		self.transaction_overlay.consolidate(with);
 	}
+
+	fn stats(&self) -> Option<JournalDBStats> {
+		Some(self.stats.read().clone())
+	}
 }
 
 impl HashDB<KeccakHasher, DBValue> for OverlayRecentDB {
@@ -459,18 +466,31 @@ impl HashDB<KeccakHasher, DBValue> for OverlayRecentDB {
 	}
 
 	fn get(&self, key: &H256) -> Option<DBValue> {
-		if let Some((d, rc)) = self.transaction_overlay.raw(key) {
-			if rc > 0 {
-				return Some(d)
+		let result = {
+			let other = || {
+				let v = {
+					let journal_overlay = self.journal_overlay.read();
+					let key = to_short_key(key);
+					journal_overlay.backing_overlay.get(&key)
+						.or_else(|| journal_overlay.pending_overlay.get(&key).cloned())
+				};
+				v.or_else(|| self.payload(key))
+			};
+			match self.transaction_overlay.raw(key) {
+				Some((d, rc)) => {
+					if rc > 0 {
+						Some(d)
+					} else {
+						other()
+					}
+				}
+				_ => { other() }
 			}
-		}
-		let v = {
-			let journal_overlay = self.journal_overlay.read();
-			let key = to_short_key(key);
-			journal_overlay.backing_overlay.get(&key)
-				.or_else(|| journal_overlay.pending_overlay.get(&key).cloned())
 		};
-		v.or_else(|| self.payload(key))
+
+		self.stats.write().read.ops += 1;
+		self.stats.write().read.bytes += result.clone().map(|r| r.len()).unwrap_or(0);
+		result
 	}
 
 	fn contains(&self, key: &H256) -> bool {
@@ -478,12 +498,40 @@ impl HashDB<KeccakHasher, DBValue> for OverlayRecentDB {
 	}
 
 	fn insert(&mut self, value: &[u8]) -> H256 {
+		self.stats.write().write.ops += 1;
+		self.stats.write().write.bytes += value.len();
 		self.transaction_overlay.insert(value)
 	}
+
 	fn emplace(&mut self, key: H256, value: DBValue) {
+		self.stats.write().write.ops += 1;
+		self.stats.write().write.bytes += value.len();
 		self.transaction_overlay.emplace(key, value);
 	}
 	fn remove(&mut self, key: &H256) {
+		self.stats.write().delete.ops += 1;
+		let get = {
+			let other = || {
+				let v = {
+					let journal_overlay = self.journal_overlay.read();
+					let key = to_short_key(key);
+					journal_overlay.backing_overlay.get(&key)
+						.or_else(|| journal_overlay.pending_overlay.get(&key).cloned())
+				};
+				v.or_else(|| self.payload(key))
+			};
+			match self.transaction_overlay.raw(key) {
+				Some((d, rc)) => {
+					if rc > 0 {
+						Some(d)
+					} else {
+						other()
+					}
+				}
+				_ => { other() }
+			}
+		};
+		self.stats.write().delete.bytes += get.map(|r| r.len()).unwrap_or(0);
 		self.transaction_overlay.remove(key);
 	}
 }

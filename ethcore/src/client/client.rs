@@ -316,7 +316,6 @@ impl Importer {
 							import_results.push(route);
 
 							client.db.read().key_value().flush().expect("DB flush failed.");
-							block_stats.final_db_stats = client.db.read().key_value().stats().unwrap();
 
 							if header.number() % 100000 == 0 {
 								fn retry_size() -> Option<u64> {
@@ -341,7 +340,7 @@ impl Importer {
 
 							trace!(target: "stats", "RECORD block #{} with stats {}", header.number(), serde_json::to_string(&block_stats).unwrap());
 
-							client.report.write().accrue_block(&header, transactions_len, client.db.read().key_value().stats().unwrap_or(DBStats::default()));
+							client.report.write().accrue_block(&header, transactions_len, DBStats::default());
 						}
 					},
 					Err(err) => {

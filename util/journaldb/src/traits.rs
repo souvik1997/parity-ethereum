@@ -25,6 +25,8 @@ use hashdb::HashDB;
 use keccak_hasher::KeccakHasher;
 use kvdb::{self, DBTransaction, DBValue, DBStats};
 
+pub type JournalDBStats = DBStats;
+
 /// A `HashDB` which can manage a short-term journal potentially containing many forks of mutually
 /// exclusive actions.
 pub trait JournalDB: HashDB<KeccakHasher, DBValue> {
