@@ -306,16 +306,26 @@ impl Importer {
 						} else {
 							imported_blocks.push(hash);
 
+							let mut block_stats = closed_block.block_stats.clone();
+
 							let transactions_len = closed_block.transactions().len();
-							closed_block.block_stats.gas_used = header.gas_used().clone();
-							closed_block.block_stats.miner = header.author().clone();
+							block_stats.gas_used = header.gas_used().clone();
+							block_stats.miner = header.author().clone();
+
+							let route = self.commit_block(closed_block, &header, encoded::Block::new(bytes), client);
+							import_results.push(route);
+
+							client.db.read().key_value().flush().expect("DB flush failed.");
+							block_stats.final_db_stats = client.db.read().key_value().stats().unwrap();
 
 							if header.number() % 100000 == 0 {
 								fn retry_size() -> Option<u64> {
+									let cwd = ::std::env::current_dir().unwrap();
+									trace!(target: "stats", "INFO cwd = {:?}", cwd);
 									const MAX_RETRIES: usize = 100;
 									let mut retries = 0;
 									loop {
-										match fs_extra::dir::get_size("/home/souvik/.local/share/io.parity-ethereum-stats-collection").ok() {
+										match fs_extra::dir::get_size(&cwd).ok() {
 											Some(s) => { return Some(s) }
 											None => {}
 										};
@@ -326,12 +336,10 @@ impl Importer {
 									}
 								}
 								use fs_extra;
-								closed_block.block_stats.on_disk_size = retry_size();
+								block_stats.on_disk_size = retry_size();
 							}
 
-							trace!(target: "stats", "block #{} with stats {}", header.number(), serde_json::to_string(&closed_block.block_stats).unwrap());
-							let route = self.commit_block(closed_block, &header, encoded::Block::new(bytes), client);
-							import_results.push(route);
+							trace!(target: "stats", "RECORD block #{} with stats {}", header.number(), serde_json::to_string(&block_stats).unwrap());
 
 							client.report.write().accrue_block(&header, transactions_len, client.db.read().key_value().stats().unwrap_or(DBStats::default()));
 						}

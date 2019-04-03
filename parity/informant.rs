@@ -304,10 +304,10 @@ impl<T: InformantData> Informant<T> {
 											paint(Yellow.bold(), format!("{:7.2}", (client_report.blocks_imported * 1000) as f64 / elapsed.as_milliseconds() as f64)),
 											paint(Yellow.bold(), format!("{:6.1}", (client_report.transactions_applied * 1000) as f64 / elapsed.as_milliseconds() as f64)),
 											paint(Yellow.bold(), format!("{:6.1}", (client_report.gas_processed / 1000).low_u64() as f64 / elapsed.as_milliseconds() as f64)),
-											paint(Yellow.bold(), format!("{:3.4}", client_report.db_stats.write_ops as f64 / client_report.blocks_imported as f64)),
-											paint(Yellow.bold(), format!("{:3.4}", client_report.db_stats.read_ops as f64 / client_report.blocks_imported as f64)),
-											paint(Yellow.bold(), format!("{:5.4}", client_report.db_stats.write_bytes as f64 / client_report.blocks_imported as f64)),
-											paint(Yellow.bold(), format!("{:5.4}", client_report.db_stats.read_bytes as f64 / client_report.blocks_imported as f64)),
+											paint(Yellow.bold(), format!("{:3.4}", client_report.db_stats.write.ops as f64 / client_report.blocks_imported as f64)),
+											paint(Yellow.bold(), format!("{:3.4}", client_report.db_stats.read.ops as f64 / client_report.blocks_imported as f64)),
+											paint(Yellow.bold(), format!("{:5.4}", client_report.db_stats.write.bytes as f64 / client_report.blocks_imported as f64)),
+											paint(Yellow.bold(), format!("{:5.4}", client_report.db_stats.read.bytes as f64 / client_report.blocks_imported as f64)),
 							)
 						} else {
 							format!("{} hdr/s",
