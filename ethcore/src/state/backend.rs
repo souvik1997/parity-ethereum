@@ -30,6 +30,7 @@ use ethereum_types::{Address, H256};
 use memorydb::MemoryDB;
 use hashdb::{AsHashDB, HashDB};
 use kvdb::{DBValue, DBStats};
+use journaldb::JournalDBStats;
 use keccak_hasher::KeccakHasher;
 
 /// State backend. See module docs for more details.
@@ -71,6 +72,10 @@ pub trait Backend: Send {
 
 	fn db_stats(&self) -> DBStats {
 		return DBStats::default();
+	}
+
+	fn journal_stats(&self) -> JournalDBStats {
+		return JournalDBStats::default();
 	}
 }
 

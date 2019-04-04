@@ -487,7 +487,11 @@ impl state::Backend for StateDB {
 	}
 
 	fn db_stats(&self) -> DBStats {
-		self.db.stats().unwrap()
+		self.db.db_stats().unwrap()
+	}
+
+	fn journal_stats(&self) -> DBStats {
+		self.db.journal_stats().unwrap()
 	}
 }
 

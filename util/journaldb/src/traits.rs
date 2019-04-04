@@ -105,7 +105,11 @@ pub trait JournalDB: HashDB<KeccakHasher, DBValue> {
 		self.backing().write(batch).map(|_| res).map_err(Into::into)
 	}
 
-	fn stats(&self) -> Option<DBStats> {
+	fn db_stats(&self) -> Option<DBStats> {
 		self.backing().stats()
+	}
+
+	fn journal_stats(&self) -> Option<JournalDBStats> {
+		None
 	}
 }

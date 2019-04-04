@@ -441,7 +441,7 @@ impl JournalDB for OverlayRecentDB {
 		self.transaction_overlay.consolidate(with);
 	}
 
-	fn stats(&self) -> Option<JournalDBStats> {
+	fn journal_stats(&self) -> Option<JournalDBStats> {
 		Some(self.stats.read().clone())
 	}
 }

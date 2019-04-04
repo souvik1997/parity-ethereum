@@ -43,6 +43,7 @@ use factory::Factories;
 use hash::keccak;
 use header::{Header, ExtendedHeader};
 use kvdb::DBStats;
+use journaldb::JournalDBStats;
 use receipt::{Receipt, TransactionOutcome};
 use rlp::{Rlp, RlpStream, Encodable, Decodable, DecoderError, encode_list};
 use state_db::StateDB;
@@ -63,9 +64,15 @@ pub enum TxType {
 	Contract
 }
 
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct UnifiedStats {
+	pub journal_stats: JournalDBStats,
+	pub db_stats: DBStats,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TxStats {
-	db_stats: DBStats,
+	stats: UnifiedStats,
 	unique_accounts_touched: Vec<Address>,
 	transaction_type: TxType
 }
@@ -73,8 +80,8 @@ pub struct TxStats {
 #[derive(Default, Debug, Clone, Serialize)]
 pub struct BlockStats {
 	pub tx_stats: HashMap<H256, TxStats>,
-	pub initial_db_stats: DBStats,
-	pub final_db_stats: DBStats,
+	pub initial_stats: UnifiedStats,
+	pub final_stats: UnifiedStats,
 	pub gas_used: U256,
 	pub on_disk_size: Option<u64>,
 	pub miner: Address,
@@ -299,7 +306,7 @@ impl<'x> OpenBlock<'x> {
 		let state = State::from_existing(db, parent.state_root().clone(), engine.account_start_nonce(number), factories)?;
 		let initial_block_stats = {
 			let mut b = BlockStats::default();
-			b.initial_db_stats = state.backend().db_stats();
+			b.initial_stats = UnifiedStats { db_stats: state.backend().db_stats(), journal_stats: state.backend().journal_stats() };
 			b
 		};
 		let mut r = OpenBlock {
@@ -370,13 +377,13 @@ impl<'x> OpenBlock<'x> {
 
 		let env_info = self.env_info();
 
-		let prev_db_stats = self.block.state.backend().db_stats();
+		let prev_stats = UnifiedStats { db_stats: self.block.state.backend().db_stats(), journal_stats: self.block.state.backend().journal_stats() };
 		self.block.state.clear_touched_accounts();
 		let outcome = self.block.state.apply(&env_info, self.engine.machine(), &t, self.block.traces.is_enabled())?;
 		self.block.state.commit();
 		self.block.state.clear();
-		let after_db_stats = self.block.state.backend().db_stats();
-		let delta_db_stats = after_db_stats - &prev_db_stats;
+		let after_stats = UnifiedStats { db_stats: self.block.state.backend().db_stats(), journal_stats: self.block.state.backend().journal_stats() };
+		let delta_stats = UnifiedStats { db_stats: after_stats.db_stats - &prev_stats.db_stats, journal_stats: after_stats.journal_stats - &prev_stats.journal_stats };
 		let transaction_type = match t.action() {
 			Action::Create => {
 				TxType::Contract
@@ -394,7 +401,7 @@ impl<'x> OpenBlock<'x> {
 				}
 			}
 		};
-		self.block_stats.tx_stats.insert(t.hash(), TxStats { transaction_type: transaction_type, db_stats: delta_db_stats, unique_accounts_touched: self.block.state.touched_accounts().into_iter().collect() });
+		self.block_stats.tx_stats.insert(t.hash(), TxStats { transaction_type: transaction_type, stats: delta_stats, unique_accounts_touched: self.block.state.touched_accounts().into_iter().collect() });
 		self.block.state.clear_touched_accounts();
 
 		self.block.transactions_set.insert(h.unwrap_or_else(||t.hash()));
@@ -481,7 +488,7 @@ impl<'x> OpenBlock<'x> {
 			b
 		}));
 		s.block.header.set_gas_used(s.block.receipts.last().map_or_else(U256::zero, |r| r.gas_used));
-		s.block_stats.final_db_stats = s.block.state.backend().db_stats();
+		s.block_stats.final_stats = UnifiedStats { db_stats: s.block.state.backend().db_stats(), journal_stats: s.block.state.backend().journal_stats() };
 
 		Ok(LockedBlock {
 			block: s.block,
