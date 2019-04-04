@@ -317,7 +317,7 @@ impl Importer {
 
 							client.db.read().key_value().flush().expect("DB flush failed.");
 
-							if header.number() % 100000 == 0 {
+							if header.number() % 1000 == 0 {
 								fn retry_size() -> Option<u64> {
 									let cwd = ::std::env::current_dir().unwrap();
 									trace!(target: "stats", "INFO cwd = {:?}", cwd);
