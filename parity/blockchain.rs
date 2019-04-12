@@ -20,6 +20,7 @@ use std::io::{BufReader, BufRead};
 use std::time::{Instant, Duration};
 use std::thread::sleep;
 use std::sync::Arc;
+use std::collections::HashMap;
 use rustc_hex::FromHex;
 use hash::{keccak, KECCAK_NULL_RLP};
 use ethereum_types::{U256, H256, Address};
@@ -383,7 +384,7 @@ fn execute_import(cmd: ImportBlockchain) -> Result<(), String> {
 	).map_err(|e| format!("Client service error: {:?}", e))?;
 
 	// free up the spec in memory.
-	drop(spec);
+	// drop(spec);
 
 	let client = service.client();
 
@@ -421,20 +422,83 @@ fn execute_import(cmd: ImportBlockchain) -> Result<(), String> {
 
 	service.register_io_handler(informant).map_err(|_| "Unable to register informant handler".to_owned())?;
 
-	let do_import = |bytes| {
-		let block = Unverified::from_rlp(bytes).map_err(|_| "Invalid block rlp")?;
-		while client.queue_info().is_full() { sleep(Duration::from_secs(1)); }
-		match client.import_block(block) {
-			Err(EthcoreError(EthcoreErrorKind::Import(ImportErrorKind::AlreadyInChain), _)) => {
-				trace!("Skipping block already in chain.");
-			}
-			Err(e) => {
-				return Err(format!("Cannot import block: {:?}", e));
-			},
-			Ok(_) => {},
+	use transaction::{Action, Transaction, SignedTransaction};
+	use ethcore::contract_address;
+
+	#[derive(Clone)]
+	struct BlockWithSigned {
+		pub block_num: u64,
+		pub block_index: usize,
+		pub tx: SignedTransaction,
+	}
+
+	impl Ord for BlockWithSigned {
+		fn cmp(&self, other: &Self) -> ::std::cmp::Ordering {
+			self.block_num.cmp(&other.block_num).then(self.block_index.cmp(&other.block_index))
 		}
-		Ok(())
+	}
+
+	impl PartialOrd for BlockWithSigned {
+		fn partial_cmp(&self, other: &Self) -> Option<::std::cmp::Ordering> {
+			Some(self.cmp(other))
+		}
+	}
+
+	impl PartialEq for BlockWithSigned {
+		fn eq(&self, other: &Self) -> bool {
+			self.cmp(other) == ::std::cmp::Ordering::Equal
+		}
+	}
+
+	impl Eq for BlockWithSigned {}
+
+	#[derive(Clone)]
+	struct ContractRecord {
+		pub create: BlockWithSigned,
+		pub calls: Vec<BlockWithSigned>
+	}
+
+	const TARGET_CONTRACTS_PER_RANGE: usize = 100;
+	const TARGET_CALLS_PER_CONTRACT: usize = 100;
+
+	let do_import  = |bytes, current_contract_txs: &mut HashMap<Address, ContractRecord>, archive_contract_txs: &mut HashMap<Address, ContractRecord>| {
+
+		let block: Unverified = Unverified::from_rlp(bytes).expect("invalid rlp");
+		if block.header.number() % 100000 == 0 {
+			println!("At block {}", block.header.number());
+			println!("Saved {} transactions in last batch, {} total", current_contract_txs.len(), archive_contract_txs.len());
+			archive_contract_txs.extend(current_contract_txs.clone());
+			current_contract_txs.clear();
+		}
+		for (block_index, tx) in block.transactions.into_iter().enumerate() {
+			assert!(!tx.is_unsigned());
+			let signed = SignedTransaction::new(tx).expect("construct signed transaction");
+			match signed.action {
+				Action::Create => {
+					if current_contract_txs.len() < TARGET_CONTRACTS_PER_RANGE {
+						let (new_address, _code_hash) = contract_address(spec.engine.create_address_scheme(block.header.number()), &signed.sender(), &signed.nonce, &signed.data);
+						current_contract_txs.insert(new_address, ContractRecord { create: BlockWithSigned { block_num: block.header.number(), block_index: block_index, tx: signed }, calls: Vec::new() });
+					}
+				}
+
+				Action::Call(address) => {
+					// println!("Action::Call({:?}): {:?}", address, unsigned);
+					match current_contract_txs.get_mut(&address) {
+						Some(ref mut record) => {
+							if record.calls.len() < TARGET_CALLS_PER_CONTRACT {
+								println!("Pushing contract call for {} at #{} / {}", address, block.header.number(), signed.hash());
+								record.calls.push(BlockWithSigned { block_num: block.header.number(), block_index: block_index, tx: signed })
+							}
+						}
+						_ => {}
+					}
+				}
+			}
+		}
 	};
+
+	let mut archive_contract_txs: HashMap<Address, ContractRecord> = HashMap::new();
+	let mut current_contract_txs: HashMap<Address, ContractRecord> = HashMap::new();
 
 	match format {
 		DataFormat::Binary => {
@@ -450,7 +514,7 @@ fn execute_import(cmd: ImportBlockchain) -> Result<(), String> {
 				let s = PayloadInfo::from(&bytes).map_err(|e| format!("Invalid RLP in the file/stream: {:?}", e))?.total();
 				bytes.resize(s, 0);
 				instream.read_exact(&mut bytes[n..]).map_err(|_| "Error reading from the file/stream.")?;
-				do_import(bytes)?;
+				do_import(bytes, &mut current_contract_txs, &mut archive_contract_txs);
 			}
 		}
 		DataFormat::Hex => {
@@ -459,10 +523,26 @@ fn execute_import(cmd: ImportBlockchain) -> Result<(), String> {
 				let s = if first_read > 0 {from_utf8(&first_bytes).unwrap().to_owned() + &(s[..])} else {s};
 				first_read = 0;
 				let bytes = s.from_hex().map_err(|_| "Invalid hex in file/stream.")?;
-				do_import(bytes)?;
+				do_import(bytes, &mut current_contract_txs, &mut archive_contract_txs);
 			}
 		}
 	}
+
+
+	println!("saved {} transactions", archive_contract_txs.len());
+
+	let mut contract_transactions = Vec::new();
+	for (_, v) in archive_contract_txs {
+		contract_transactions.push(v.create);
+		contract_transactions.extend(v.calls);
+	}
+	contract_transactions.sort_unstable();
+	let mut output_file = fs::File::create("contracts.bin").expect("failed to create file");
+	for ctx in contract_transactions {
+		use std::io::Write;
+		output_file.write(&rlp::encode(&ctx.tx));
+	}
+
 	client.flush_queue();
 
 	// save user defaults
