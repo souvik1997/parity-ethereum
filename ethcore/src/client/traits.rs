@@ -35,7 +35,7 @@ use trace::LocalizedTrace;
 use transaction::{self, LocalizedTransaction, SignedTransaction};
 use verification::queue::QueueInfo as BlockQueueInfo;
 use verification::queue::kind::blocks::Unverified;
-use state::{StateInfo, backend::Proof};
+use state::{StateInfo, backend::Witness};
 use state::backend::Backend;
 use header::Header;
 use engines::EthEngine;
@@ -473,7 +473,7 @@ pub trait EngineClient: Sync + Send + ChainInfo {
 	fn block_header(&self, id: BlockId) -> Option<encoded::Header>;
 }
 
-/// Extended client interface for providing proofs of the state.
+/// Extended client interface for providing witnesss of the state.
 pub trait ProvingBlockChainClient: BlockChainClient {
 	/// Prove account storage at a specific block id.
 	///
@@ -493,10 +493,4 @@ pub trait ProvingBlockChainClient: BlockChainClient {
 
 	/// Get an epoch change signal by block hash.
 	fn epoch_signal(&self, hash: H256) -> Option<Vec<u8>>;
-}
-
-/// Provides `prove_call_contract` method
-pub trait ProvingCallContract: CallContract {
-	/// Like `call_contract`, but generates a proof
-	fn prove_call_contract(&self, id: BlockId, address: Address, data: Bytes) -> Result<(Bytes, Proof), String>;
 }

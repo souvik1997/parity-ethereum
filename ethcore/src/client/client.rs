@@ -39,7 +39,7 @@ use client::{
 	RegistryInfo, ReopenBlock, PrepareOpenBlock, ScheduleInfo, ImportSealedBlock,
 	BroadcastProposalBlock, ImportBlock, StateOrBlock, StateInfo, StateClient, Call,
 	AccountData, BlockChain as BlockChainTrait, BlockProducer, SealedBlockImporter,
-	ClientIoMessage, ProvingCallContract
+	ClientIoMessage
 };
 use client::{
 	BlockId, TransactionId, UncleId, TraceId, ClientConfig, BlockChainClient,
@@ -69,7 +69,7 @@ use receipt::{Receipt, LocalizedReceipt};
 use snapshot::{self, io as snapshot_io, SnapshotClient};
 use spec::Spec;
 use state_db::StateDB;
-use state::{self, State, backend::Backend, backend::Proof, backend::ProofCheck, backend::ProofElement};
+use state::{self, State, backend::Backend, backend::Witness, backend::WitnessCheck, backend::WitnessElement};
 use trace;
 use trace::{TraceDB, ImportRequest as TraceImportRequest, LocalizedTrace, Database as TraceDatabase};
 use transaction::{self, LocalizedTransaction, UnverifiedTransaction, SignedTransaction, Transaction, Action};
@@ -151,7 +151,7 @@ pub trait ClientBackend : Backend + Clone + 'static {
 	fn sanity_check(&self, chain: &Arc<BlockChain>);
 	fn pruning_info(&self, chain: &Arc<BlockChain>) -> PruningInfo;
 	fn state_at_hash(&self, hash: &H256) -> Option<Self>;
-	fn state_at_proof(&self, proof: &Proof) -> Option<Self>;
+	fn state_at_witness(&self, witness: Witness) -> Option<Self>;
 	fn sync_cache(&mut self, enacted: &[H256], retracted: &[H256], is_best: bool);
 	fn state_data(&self, hash: &H256) -> Option<Bytes>;
 	fn prune_ancient(&mut self, chain: &BlockChain, history: u64, history_mem: usize, on_prune: &mut FnMut(DBTransaction)) -> Result<(), ::error::Error>;
@@ -160,7 +160,7 @@ pub trait ClientBackend : Backend + Clone + 'static {
 	fn earliest_era(&self) -> Option<u64>;
 	fn journal_under(&mut self, batch: &mut DBTransaction, now: u64, id: &H256) -> ::std::io::Result<u32>;
 	fn mem_used(&self) -> usize;
-	fn need_proofs() -> bool;
+	fn need_witnesss() -> bool;
 }
 
 impl ClientBackend for StateDB {
@@ -197,7 +197,7 @@ impl ClientBackend for StateDB {
 		}
 	}
 
-	fn state_at_proof(&self, proof: &Proof) -> Option<Self> {
+	fn state_at_witness(&self, witness: Witness) -> Option<Self> {
 		None
 	}
 
@@ -267,16 +267,16 @@ impl ClientBackend for StateDB {
 		StateDB::mem_used(self)
 	}
 
-	fn need_proofs() -> bool {
+	fn need_witnesss() -> bool {
 		false
 	}
 }
 
-impl ClientBackend for ProofCheck {
+impl ClientBackend for WitnessCheck {
 	fn create(db: &Arc<BlockChainDB>, check: Option<(&Spec<Self>, &Factories)>, pruning: journaldb::Algorithm, cache_size: usize) -> Result<Self, ::error::Error> {
 		info!(target: "stateless", "Creating stateless client backend");
 		// We have to return something but this is invalid
-		Ok(Self::new(&vec![]))
+		Ok(Self::new(Witness::new(vec![])))
 	}
 
 	fn sanity_check(&self, chain: &Arc<BlockChain>) {
@@ -290,9 +290,8 @@ impl ClientBackend for ProofCheck {
 		}
 	}
 
-	fn state_at_proof(&self, proof: &Proof) -> Option<Self> {
-		let values: Vec<DBValue> = proof.values.iter().map(|v| v.element.clone()).collect();
-		Some(Self::new(&values))
+	fn state_at_witness(&self, witness: Witness) -> Option<Self> {
+		Some(Self::new(witness))
 	}
 
 	fn state_at_hash(&self, hash: &H256) -> Option<Self> {
@@ -331,13 +330,13 @@ impl ClientBackend for ProofCheck {
 		0
 	}
 
-	fn need_proofs() -> bool {
+	fn need_witnesss() -> bool {
 		true
 	}
 }
 
 pub type Client = CoreClient<StateDB>;
-pub type StatelessClient = CoreClient<ProofCheck>;
+pub type StatelessClient = CoreClient<WitnessCheck>;
 
 /// Blockchain database client backed by a persistent database. Owns and manages a blockchain and a block queue.
 /// Call `import_block()` to import a block asynchronously; `flush_queue()` flushes the queue.
@@ -708,7 +707,7 @@ impl<BC: ClientBackend> CoreClient<BC> {
 	pub fn latest_state(&self) -> State<BC> {
 		let header = self.best_block_header();
 		State::from_existing(
-			self.state_db.read().state_at_hash(&header.hash()).or_else(|| self.state_db.read().state_at_proof(&self.chain.read().best_block_proof()?)).expect("either proof or hash should work"),
+			self.state_db.read().state_at_hash(&header.hash()).or_else(|| self.state_db.read().state_at_witness(self.chain.read().best_block_witness()?)).expect("either witness or hash should work"),
 			*header.state_root(),
 			self.engine.account_start_nonce(header.number()),
 			self.factories.clone()
@@ -1019,7 +1018,7 @@ impl<BC: ClientBackend> CoreClient<BC> {
 				}
 
 				let block_seal = block.header.seal().into();
-				let contains_proof = block.proof.is_some();
+				let contains_witness = block.witness.is_some();
 				match self.check_and_lock_block(block) {
 					Ok(closed_block) => {
 						if self.engine.is_proposal(&header) {
@@ -1031,13 +1030,13 @@ impl<BC: ClientBackend> CoreClient<BC> {
 							let transactions_len = closed_block.transactions().len();
 							debug!(target: "client", "Checked block {} with {} transactions", hash, transactions_len);
 							let route = {
-								if contains_proof {
+								if contains_witness {
 									self.commit_block(closed_block, &header, encoded::Block::new(bytes))
 								} else {
 									use hash::keccak;
 									debug!(target: "client", "Pre-verified block {} did not have witness data. Using generated witness", hash);
 									let sealed_block = closed_block.clone().try_seal(&*self.engine, block_seal).expect("provided seal should be valid");
-									let witness = sealed_block.block.proof();
+									let witness = sealed_block.block.witness();
 									let sealed_block_rlp = sealed_block.rlp_bytes();
 									trace!(target: "stateless", "Block #{} with witness: hash: {}, numvalues: {}, bytes: {}, block_bytes: {}, valuehashes: {:?}", closed_block.header().number(), witness.hash(), witness.values.len(), rlp::encode(&witness).len(), sealed_block_rlp.len(), witness.values.iter().map(|v| (v.hash(), v.element.len())).collect::<Vec<_>>());
 									self.commit_block(closed_block, &header, encoded::Block::new(sealed_block_rlp))
@@ -1140,10 +1139,10 @@ impl<BC: ClientBackend> CoreClient<BC> {
 
 		// Enact Verified Block
 		let last_hashes = self.build_last_hashes(header.parent_hash());
-		let db = match self.state_db.read().state_at_hash(header.parent_hash()).or(block.proof.as_ref().and_then(|v| self.state_db.read().state_at_proof(v))) {
+		let db = match self.state_db.read().state_at_hash(header.parent_hash()).or(block.witness.as_ref().and_then(|v| self.state_db.read().state_at_witness(v.clone()))) {
 			Some(h) => h,
 			None => {
-				warn!("No state found for #{} ({}): could not find state at parent hash {} nor proof for block", header.number(), header.hash(), header.parent_hash());
+				warn!("No state found for #{} ({}): could not find state at parent hash {} nor witness for block", header.number(), header.hash(), header.parent_hash());
 				bail!("State not found");
 			}
 		};
@@ -1270,7 +1269,7 @@ impl<BC: ClientBackend> CoreClient<BC> {
 		let mut prove_state = block.state.drop().1;
 		let mut state = prove_state.base();
 
-		// check epoch end signal, potentially generating a proof on the current
+		// check epoch end signal, potentially generating a witness on the current
 		// state.
 		self.check_epoch_end_signal(
 			&header,
@@ -1383,27 +1382,19 @@ impl<BC: ClientBackend> CoreClient<BC> {
 							let res = Executive::new(&mut state, &env_info, &machine, &schedule)
 								.transact(&transaction, options);
 
-							match res {
+							let res = match res {
 								Err(ExecutionError::Internal(e)) =>
 									Err(format!("Internal error: {}", e)),
 								Err(e) => {
 									trace!(target: "client", "Proved call failed: {}", e);
-									let proof_vec: Vec<ProofElement> = state.drop().1.extract_proof().into();
-									let proof_data: Vec<Vec<u8>> = proof_vec.into_iter().map(|x| {
-										let value: DBValue = x.into();
-										value.into_vec()
-									}).collect();
-									Ok((Vec::new(), proof_data))
+									Ok((Vec::new(), state.drop().1.extract_proof()))
 								}
 								Ok(res) => {
-									let proof_vec: Vec<ProofElement> = state.drop().1.extract_proof().into();
-									let proof_data: Vec<Vec<u8>> = proof_vec.into_iter().map(|x| {
-										let value: DBValue = x.into();
-										value.into_vec()
-									}).collect();
-									Ok((res.output, proof_data))
+									Ok((res.output, state.drop().1.extract_proof()))
 								},
-							}
+							};
+
+							res.map(|(output, proof)| (output, proof.into_iter().map(|x| x.into_vec()).collect()))
 						};
 
 						match with_state.generate_proof(&call) {
@@ -1449,7 +1440,7 @@ impl<BC: ClientBackend> CoreClient<BC> {
 				proof: proof,
 			});
 
-			// always write the batch directly since epoch transition proofs are
+			// always write the batch directly since epoch transition proof are
 			// fetched from a DB iterator and DB iterators are only available on
 			// flushed data.
 			self.db.read().key_value().write(batch).expect("DB flush failed");
@@ -1565,9 +1556,9 @@ impl<BC: ClientBackend> CallContract for CoreClient<BC> {
 
 impl<BC: ClientBackend> ImportBlock for CoreClient<BC> {
 	fn import_block(&self, unverified: Unverified) -> EthcoreResult<H256> {
-		debug!(target: "client", "Importing block #{} with {}", unverified.header.clone().number(), match &unverified.proof {
-			Some(proof) => format!("proof ({} entries)", proof.values.len()),
-			None => "no proof".into(),
+		debug!(target: "client", "Importing block #{} with {}", unverified.header.clone().number(), match &unverified.witness {
+			Some(witness) => format!("witness ({} entries)", witness.values.len()),
+			None => "no witness".into(),
 		});
 		if self.chain.read().is_known(&unverified.hash()) {
 			bail!(EthcoreErrorKind::Import(ImportErrorKind::AlreadyInChain));
@@ -2611,42 +2602,6 @@ impl<BC: ClientBackend> ProvingBlockChainClient for CoreClient<BC> {
 	}
 }
 
-impl<BC: ClientBackend> ProvingCallContract for CoreClient<BC> {
-	fn prove_call_contract(&self, block_id: BlockId, address: Address, data: Bytes) -> Result<(Bytes, Proof), String> {
-		let state_pruned = || CallError::StatePruned.to_string();
-
-		// From state_at
-
-		let mut proving_state = self.block_header(block_id).and_then(|header| {
-			let state_db = self.state_db.read().clone();
-			let backend = ::state::backend::Proving::new(state_db);
-
-			let root = header.state_root();
-			let block_number = self.block_number(block_id)?;
-			State::from_existing(backend, root, self.engine.account_start_nonce(block_number), self.factories.clone()).ok()
-		}).ok_or_else(&state_pruned)?;
-
-		let header = self.block_header_decoded(block_id).ok_or_else(&state_pruned)?;
-
-		let transaction = self.contract_call_tx(block_id, address, data);
-
-		let env_info = EnvInfo {
-			number: header.number(),
-			author: header.author().clone(),
-			timestamp: header.timestamp(),
-			difficulty: header.difficulty().clone(),
-			last_hashes: self.build_last_hashes(header.parent_hash()),
-			gas_used: U256::default(),
-			gas_limit: U256::max_value(),
-		};
-		let machine = self.engine.machine();
-
-		Self::do_virtual_call(&machine, &env_info, &mut proving_state, &transaction, Default::default()).map_err(|e| format!("{:?}", e))
-			.map(|executed| executed.output)
-			.map(|bytes| (bytes, proving_state.drop().1.extract_proof()))
-	}
-}
-
 impl<BC: ClientBackend> SnapshotClient for CoreClient<BC> {}
 
 impl<BC: ClientBackend> Drop for CoreClient<BC> {
@@ -2857,24 +2812,24 @@ mod tests {
 		});
 	}
 
-	fn should_reliably_use_proof(rlp: &'static str, root: &'static str, count: usize) {
+	fn should_reliably_use_witness(rlp: &'static str, root: &'static str, count: usize) {
 		use rayon::prelude::*;
 		use block::enact_verified;
 		use rustc_hex::FromHex;
 		use verification::queue::kind::blocks::Unverified;
 		use verification::PreverifiedBlock;
-		use state::backend::ProofCheck;
+		use state::backend::WitnessCheck;
 		use transaction::SignedTransaction;
 		use kvdb::DBValue;
 		use std::sync::Arc;
 		use ethereum_types::H256;
 		use spec::*;
 
-		let spec = Spec::<ProofCheck>::new_test();
+		let spec = Spec::<WitnessCheck>::new_test();
 
 		let rlp_bytes = rlp.from_hex().unwrap();
 		let unverified = Unverified::from_rlp(rlp_bytes).expect("is valid rlp");
-		assert!(unverified.proof.is_some());
+		assert!(unverified.witness.is_some());
 		let preverified = PreverifiedBlock {
 			header: unverified.header,
 			transactions: unverified.transactions
@@ -2883,16 +2838,16 @@ mod tests {
 				.collect::<Result<_,_>>().expect("failed to sign transactions"),
 			uncles: unverified.uncles,
 			bytes: unverified.bytes,
-			proof: unverified.proof,
+			witness: unverified.witness,
 		};
-		let values: Vec<DBValue> = preverified.proof.as_ref().unwrap().values.iter().map(|v| v.element.clone()).collect();
+		let values: Vec<DBValue> = preverified.witness.as_ref().unwrap().values.iter().map(|v| v.element.clone()).collect();
 
 		let mut genesis_header = spec.genesis_header();
 		genesis_header.set_state_root(H256::from(root));
 		let last_hashes = Arc::new(vec![genesis_header.hash()]);
 		let successes: usize = (0..count).into_par_iter().map(|_| {
-			let proofcheck = ProofCheck::new(&values);
-			match enact_verified(preverified.clone(), &*spec.engine, false, proofcheck, &genesis_header, last_hashes.clone(), Default::default(), false, &mut Vec::new().into_iter()) {
+			let witnesscheck = WitnessCheck::new(&values);
+			match enact_verified(preverified.clone(), &*spec.engine, false, witnesscheck, &genesis_header, last_hashes.clone(), Default::default(), false, &mut Vec::new().into_iter()) {
 				Ok(_) => 1,
 				_ => 0
 			}
@@ -2903,15 +2858,15 @@ mod tests {
 	}
 
 	#[test]
-	fn should_reliably_use_proof_132637() {
+	fn should_reliably_use_witness_132637() {
 		use client::client_test_aux;
-		should_reliably_use_proof(client_test_aux::BLOCK_132637_MAINNET_RLP, "0x6dea7f3097b1230df4d055cf9a9b02e97d364f7e4eb4003ab7bb5895aa84de43", 1000);
+		should_reliably_use_witness(client_test_aux::BLOCK_132637_MAINNET_RLP, "0x6dea7f3097b1230df4d055cf9a9b02e97d364f7e4eb4003ab7bb5895aa84de43", 1000);
 	}
 
 	#[test]
-	fn should_reliably_use_proof_129626() {
+	fn should_reliably_use_witness_129626() {
 		use client::client_test_aux;
-		should_reliably_use_proof(client_test_aux::BLOCK_129626_MAINNET_RLP, "0x9a3bcd1edafff89d64fa8b76886acdd9cdbb7198efd55951f7718073eca88f71", 1000);
+		should_reliably_use_witness(client_test_aux::BLOCK_129626_MAINNET_RLP, "0x9a3bcd1edafff89d64fa8b76886acdd9cdbb7198efd55951f7718073eca88f71", 1000);
 	}
 }
 

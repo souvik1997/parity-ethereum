@@ -40,7 +40,7 @@ use client::{
 	TransactionId, UncleId, TraceId, TraceFilter, LastHashes, CallAnalytics,
 	ProvingBlockChainClient, ScheduleInfo, ImportSealedBlock, BroadcastProposalBlock, ImportBlock, StateOrBlock,
 	Call, StateClient, EngineInfo, AccountData, BlockChain, BlockProducer, SealedBlockImporter, IoClient,
-	BadBlocks, ProvingCallContract
+	BadBlocks
 };
 use db::{NUM_COLUMNS, COL_STATE};
 use header::{Header as BlockHeader, BlockNumber};
@@ -64,7 +64,7 @@ use header::Header;
 use encoded;
 use engines::EthEngine;
 use ethtrie;
-use state::{StateInfo, backend::Proof};
+use state::{StateInfo, backend::Witness};
 use views::BlockView;
 
 /// Test client.
@@ -514,10 +514,6 @@ impl CallContract for TestBlockChainClient {
 	fn call_contract(&self, _id: BlockId, _address: Address, _data: Bytes) -> Result<Bytes, String> { Ok(vec![]) }
 }
 
-impl ProvingCallContract for TestBlockChainClient {
-	fn prove_call_contract(&self, _block_id: BlockId, _address: Address, _data: Bytes) -> Result<(Bytes, Proof), String> { Ok((vec![], Proof::default())) }
-}
-
 impl TransactionInfo for TestBlockChainClient {
 	fn transaction_block(&self, _id: TransactionId) -> Option<H256> {
 		None	// Simple default.
@@ -632,7 +628,7 @@ impl BadBlocks for TestBlockChainClient {
 				header: Default::default(),
 				transactions: vec![],
 				uncles: vec![],
-				proof: None,
+				witness: None,
 				bytes: vec![1, 2, 3],
 			}, "Invalid block".into())
 		]

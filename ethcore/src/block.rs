@@ -44,7 +44,7 @@ use hash::keccak;
 use header::{Header, ExtendedHeader};
 use receipt::{Receipt, TransactionOutcome};
 use rlp::{Rlp, RlpStream, Encodable, Decodable, DecoderError, encode_list};
-use state::{State, backend::Proving, backend::Proof, backend::Backend};
+use state::{State, backend::WitnessCreate, backend::Witness, backend::Backend};
 use trace::Tracing;
 use transaction::{UnverifiedTransaction, SignedTransaction, Error as TransactionError};
 use triehash::ordered_trie_root;
@@ -61,22 +61,22 @@ pub struct Block {
 	pub transactions: Vec<UnverifiedTransaction>,
 	/// The uncles of this block.
 	pub uncles: Vec<Header>,
-	/// Proof of transactions
-	pub proof: Option<Proof>,
+	/// Witness of transactions
+	pub witness: Option<Witness>,
 }
 
 impl Block {
 	/// Get the RLP-encoding of the block with the seal.
 	pub fn rlp_bytes(&self) -> Bytes {
-		let list_length = 3 + match self.proof { Some(_) => 0, None => 0};
+		let list_length = 3 + match self.witness { Some(_) => 0, None => 0};
 		let mut block_rlp = RlpStream::new_list(list_length);
 		block_rlp.append(&self.header);
 		block_rlp.append_list(&self.transactions);
 		block_rlp.append_list(&self.uncles);
 		/*
-		match self.proof {
-			Some(ref proof) => {
-				block_rlp.append(proof);
+		match self.witness {
+			Some(ref witness) => {
+				block_rlp.append(witness);
 			}
 			None => {}
 		};*/
@@ -98,7 +98,7 @@ impl Decodable for Block {
 			header: rlp.val_at(0)?,
 			transactions: rlp.list_at(1)?,
 			uncles: rlp.list_at(2)?,
-			proof: rlp.val_at(3).ok(),
+			witness: rlp.val_at(3).ok(),
 		})
 	}
 }
@@ -117,7 +117,7 @@ pub struct ExecutedBlock<B: Backend + Clone> {
 	/// Hashes of already executed transactions.
 	pub transactions_set: HashSet<H256>,
 	/// Underlaying state.
-	pub state: State<Proving<B>>,
+	pub state: State<WitnessCreate<B>>,
 	/// Transaction traces.
 	pub traces: Tracing,
 	/// Hashes of last 256 blocks.
@@ -126,7 +126,7 @@ pub struct ExecutedBlock<B: Backend + Clone> {
 
 impl<'a, B: Backend + Clone + 'a> ExecutedBlock<B> {
 	/// Create a new block from the given `state`.
-	fn new(state: State<Proving<B>>, last_hashes: Arc<LastHashes>, tracing: bool) -> ExecutedBlock<B> {
+	fn new(state: State<WitnessCreate<B>>, last_hashes: Arc<LastHashes>, tracing: bool) -> ExecutedBlock<B> {
 		ExecutedBlock {
 			header: Default::default(),
 			transactions: Default::default(),
@@ -158,7 +158,7 @@ impl<'a, B: Backend + Clone + 'a> ExecutedBlock<B> {
 	}
 
 	/// Get mutable access to a state.
-	pub fn state_mut(&mut self) -> &mut State<Proving<B>> {
+	pub fn state_mut(&mut self) -> &mut State<WitnessCreate<B>> {
 		&mut self.state
 	}
 
@@ -182,7 +182,7 @@ pub trait IsBlock {
 			header: self.header().clone(),
 			transactions: self.transactions().iter().cloned().map(Into::into).collect(),
 			uncles: self.uncles().to_vec(),
-			proof: Some(self.proof())
+			witness: Some(self.witness())
 		}
 	}
 
@@ -190,7 +190,7 @@ pub trait IsBlock {
 	fn header(&self) -> &Header { &self.block().header }
 
 	/// Get the final state associated with this object's block.
-	fn state(&self) -> &State<Proving<Self::BlockStateBackend>> { &self.block().state }
+	fn state(&self) -> &State<WitnessCreate<Self::BlockStateBackend>> { &self.block().state }
 
 	/// Get all information on transactions in this block.
 	fn transactions(&self) -> &[SignedTransaction] { &self.block().transactions }
@@ -201,8 +201,8 @@ pub trait IsBlock {
 	/// Get all uncles in this block.
 	fn uncles(&self) -> &[Header] { &self.block().uncles }
 
-	fn proof(&self) -> Proof {
-		let p = self.state().clone().drop().1.extract_proof();
+	fn witness(&self) -> Witness {
+		let p = self.state().clone().drop().1.extract_witness();
 		assert!(p.values.len() > 0);
 		p
 	}
@@ -255,7 +255,7 @@ pub struct OpenBlock<'x, B: Backend + Clone> {
 #[derive(Clone)]
 pub struct ClosedBlock<B: Backend + Clone> {
 	block: ExecutedBlock<B>,
-	unclosed_state: State<Proving<B>>,
+	unclosed_state: State<WitnessCreate<B>>,
 }
 
 /// Just like `ClosedBlock` except that we can't reopen it and it's faster.
@@ -289,7 +289,7 @@ impl<'x, B: Backend + Clone + 'static> OpenBlock<'x, B> {
 		ancestry: &mut Iterator<Item=ExtendedHeader>,
 	) -> Result<Self, Error> {
 		let number = parent.number() + 1;
-		let db = Proving::new(db);
+		let db = WitnessCreate::new(db);
 		let state = State::from_existing(db, parent.state_root().clone(), engine.account_start_nonce(number), factories)?;
 		let mut r = OpenBlock {
 			block: ExecutedBlock::new(state, last_hashes, tracing),
@@ -565,7 +565,7 @@ impl<'a, B: Backend + Clone + 'a> SealedBlock<B> {
 		block_rlp.append(&self.block.header);
 		block_rlp.append_list(&self.block.transactions);
 		block_rlp.append_list(&self.block.uncles);
-		// block_rlp.append(&self.block.proof());
+		// block_rlp.append(&self.block.witness());
 		block_rlp.out()
 	}
 }

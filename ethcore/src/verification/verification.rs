@@ -38,7 +38,7 @@ use error::{BlockError, Error};
 use header::{BlockNumber, Header};
 use transaction::SignedTransaction;
 use verification::queue::kind::blocks::Unverified;
-use state::backend::{Backend, Proof};
+use state::backend::{Backend, Witness};
 
 
 /// Returns `Ok<SystemTime>` when the result less or equal to `i32::max_value` to prevent `SystemTime` to panic because
@@ -70,7 +70,7 @@ pub struct PreverifiedBlock {
 	pub uncles: Vec<Header>,
 	/// Block bytes
 	pub bytes: Bytes,
-	pub proof: Option<Proof>,
+	pub witness: Option<Witness>,
 }
 
 impl HeapSizeOf for PreverifiedBlock {
@@ -140,7 +140,7 @@ pub fn verify_block_unordered<B: Backend + Clone + 'static>(block: Unverified, e
 		transactions,
 		uncles: block.uncles,
 		bytes: block.bytes,
-		proof: block.proof,
+		witness: block.witness,
 	})
 }
 
@@ -559,7 +559,7 @@ mod tests {
 			transactions,
 			uncles: block.uncles,
 			bytes: bytes.to_vec(),
-			proof: None,
+			witness: None,
 		};
 
 		let full_params = FullFamilyParams {

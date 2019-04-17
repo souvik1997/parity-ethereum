@@ -24,7 +24,7 @@ use rlp::{Rlp, RlpStream, DecoderError};
 use network;
 use ethcore::header::Header as BlockHeader;
 use ethcore::verification::queue::kind::blocks::Unverified;
-use ethcore::state::backend::Proof;
+use ethcore::state::backend::Witness;
 use transaction::UnverifiedTransaction;
 
 known_heap_size!(0, HeaderId);
@@ -58,8 +58,8 @@ pub struct SyncBody {
 	pub transactions: Vec<UnverifiedTransaction>,
 	pub uncles_bytes: Bytes,
 	pub uncles: Vec<BlockHeader>,
-	pub proof_bytes: Option<Bytes>,
-	pub proof: Option<Proof>,
+	pub witness_bytes: Option<Bytes>,
+	pub witness: Option<Witness>,
 	pub state_root: Option<H256>,
 }
 
@@ -68,7 +68,7 @@ impl SyncBody {
 		let rlp = Rlp::new(bytes);
 		let transactions_rlp = rlp.at(0)?;
 		let uncles_rlp = rlp.at(1)?;
-		let proof_rlp = rlp.at(2).ok();
+		let witness_rlp = rlp.at(2).ok();
 		let state_root_rlp = rlp.at(3).ok();
 
 		let result = SyncBody {
@@ -76,8 +76,8 @@ impl SyncBody {
 			transactions: transactions_rlp.as_list()?,
 			uncles_bytes: uncles_rlp.as_raw().to_vec(),
 			uncles: uncles_rlp.as_list()?,
-			proof_bytes: proof_rlp.as_ref().map(|v| v.as_raw().to_vec()),
-			proof: proof_rlp.and_then(|v| v.as_val().ok()),
+			witness_bytes: witness_rlp.as_ref().map(|v| v.as_raw().to_vec()),
+			witness: witness_rlp.and_then(|v| v.as_val().ok()),
 			state_root: state_root_rlp.and_then(|v| v.as_val().ok()),
 		};
 
@@ -90,8 +90,8 @@ impl SyncBody {
 			transactions: Vec::with_capacity(0),
 			uncles_bytes: ::rlp::EMPTY_LIST_RLP.to_vec(),
 			uncles: Vec::with_capacity(0),
-			proof_bytes: None,
-			proof: None,
+			witness_bytes: None,
+			witness: None,
 			state_root: None,
 		}
 	}
@@ -122,13 +122,13 @@ impl HeapSizeOf for SyncBlock {
 
 fn unverified_from_sync(header: SyncHeader, body: Option<SyncBody>) -> Unverified {
 	let body = body.unwrap_or_else(SyncBody::empty_body);
-	let list_length = 3 + match body.proof_bytes { Some(_) => 1, None => 0 };
+	let list_length = 3 + match body.witness_bytes { Some(_) => 1, None => 0 };
 	let mut stream = RlpStream::new_list(list_length);
 	stream.append_raw(&header.bytes, 1);
 	stream.append_raw(&body.transactions_bytes, 1);
 	stream.append_raw(&body.uncles_bytes, 1);
-	match body.proof_bytes {
-		Some(ref proof) => { stream.append_raw(proof, 1); }
+	match body.witness_bytes {
+		Some(ref witness) => { stream.append_raw(witness, 1); }
 		None => {}
 	};
 
@@ -136,7 +136,7 @@ fn unverified_from_sync(header: SyncHeader, body: Option<SyncBody>) -> Unverifie
 		header: header.header,
 		transactions: body.transactions,
 		uncles: body.uncles,
-		proof: body.proof,
+		witness: body.witness,
 		bytes: stream.out().to_vec(),
 	}
 }
@@ -164,8 +164,8 @@ struct HeaderId {
 pub struct BlockCollection {
 	/// Does this collection need block receipts.
 	need_receipts: bool,
-	/// Does this collection need block proofs
-	need_proofs: bool,
+	/// Does this collection need block witnesss
+	need_witnesss: bool,
 	/// Heads of subchains to download
 	heads: Vec<H256>,
 	/// Downloaded blocks.
@@ -188,10 +188,10 @@ pub struct BlockCollection {
 
 impl BlockCollection {
 	/// Create a new instance.
-	pub fn new(download_receipts: bool, need_proofs: bool) -> BlockCollection {
+	pub fn new(download_receipts: bool, need_witnesss: bool) -> BlockCollection {
 		BlockCollection {
 			need_receipts: download_receipts,
-			need_proofs: need_proofs,
+			need_witnesss: need_witnesss,
 			blocks: HashMap::new(),
 			header_ids: HashMap::new(),
 			receipt_ids: HashMap::new(),
@@ -520,19 +520,19 @@ impl BlockCollection {
 		let header_id = HeaderId {
 			transactions_root: *info.header.transactions_root(),
 			uncles: *info.header.uncles_hash(),
-			state_root: if self.need_proofs { Some(*info.header.state_root()) } else { None },
+			state_root: if self.need_witnesss { Some(*info.header.state_root()) } else { None },
 		};
 
-		let body = if header_id.transactions_root == KECCAK_NULL_RLP && header_id.uncles == KECCAK_EMPTY_LIST_RLP && !self.need_proofs {
-			// empty body and we don't need proof, just mark as downloaded
+		let body = if header_id.transactions_root == KECCAK_NULL_RLP && header_id.uncles == KECCAK_EMPTY_LIST_RLP && !self.need_witnesss {
+			// empty body and we don't need witness, just mark as downloaded
 			Some(SyncBody::empty_body())
 		} else {
 			trace!(target: "sync",
-				"Queueing body tx_root = {:?}, uncles = {:?}, state root = {:?} (need_proofs = {}), block = {:?}, number = {}",
+				"Queueing body tx_root = {:?}, uncles = {:?}, state root = {:?} (need_witnesss = {}), block = {:?}, number = {}",
 				header_id.transactions_root,
 				header_id.uncles,
 				header_id.state_root,
-				self.need_proofs,
+				self.need_witnesss,
 				hash,
 				info.header.number()
 			);

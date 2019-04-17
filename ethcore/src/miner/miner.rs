@@ -44,7 +44,7 @@ use account_provider::{AccountProvider, SignError as AccountError};
 use block::{ClosedBlock, IsBlock, Block, SealedBlock};
 use client::{
 	BlockChain, ChainInfo, CallContract, BlockProducer, SealedBlockImporter, Nonce, TransactionInfo, TransactionId,
-	ProvingCallContract, ReopenBlock, BroadcastProposalBlock, ImportSealedBlock, PrepareOpenBlock, ClientBackend
+	ReopenBlock, BroadcastProposalBlock, ImportSealedBlock, PrepareOpenBlock, ClientBackend
 };
 use client::{BlockId, ClientIoMessage};
 use executive::contract_address;
@@ -350,7 +350,7 @@ impl<B: ClientBackend> Miner<B> {
 	}
 
 	fn pool_client<'a, C: 'a>(&'a self, chain: &'a C) -> PoolClient<'a, C, B> where
-		C: BlockChain + CallContract + ProvingCallContract,
+		C: BlockChain + CallContract
 	{
 		PoolClient::new(
 			chain,
@@ -363,7 +363,7 @@ impl<B: ClientBackend> Miner<B> {
 
 	/// Prepares new block for sealing including top transactions from queue.
 	fn prepare_block<C>(&self, chain: &C) -> Option<(ClosedBlock<B>, Option<H256>)> where
-		C: BlockChain + CallContract + BlockProducer + Nonce + ProvingCallContract + Sync + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B>
+		C: BlockChain + CallContract + BlockProducer + Nonce + Sync + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B>
 	{
 		trace_time!("prepare_block");
 		let chain_info = chain.chain_info();
@@ -747,7 +747,7 @@ impl<B: ClientBackend> Miner<B> {
 
 	/// Prepare a pending block. Returns the preparation status.
 	fn prepare_pending_block<C>(&self, client: &C) -> BlockPreparationStatus where
-		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B>,
+		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + Sync + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B>,
 	{
 		trace!(target: "miner", "prepare_pending_block: entering");
 		let prepare_new = {
@@ -1077,7 +1077,7 @@ impl<B: ClientBackend> miner::MinerService for Miner<B> {
 	/// Update sealing if required.
 	/// Prepare the block and work if the Engine does not seal internally.
 	fn update_sealing<C>(&self, chain: &C) where
-		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B> + ImportSealedBlock<ImportSealedBlockStateBackend = B> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = B>,
+		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + Sync + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B> + ImportSealedBlock<ImportSealedBlockStateBackend = B> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = B>,
 	{
 		trace!(target: "miner", "update_sealing");
 
@@ -1131,7 +1131,7 @@ impl<B: ClientBackend> miner::MinerService for Miner<B> {
 	}
 
 	fn work_package<C>(&self, chain: &C) -> Option<(H256, BlockNumber, u64, U256)> where
-		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B> + ImportSealedBlock<ImportSealedBlockStateBackend = B>,
+		C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + Sync + ReopenBlock<ReopenBlockStateBackend = B> + PrepareOpenBlock<PrepareOpenBlockStateBackend = B> + ImportSealedBlock<ImportSealedBlockStateBackend = B>,
 	{
 		if self.engine.seals_internally().is_some() {
 			return None;

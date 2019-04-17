@@ -20,7 +20,7 @@ use bytes::Bytes;
 use ethereum_types::H256;
 use hash::keccak;
 use header::{Header, BlockNumber};
-use state::backend::Proof;
+use state::backend::Witness;
 use transaction::{LocalizedTransaction, UnverifiedTransaction};
 use views::{TransactionView, HeaderView};
 use super::ViewRlp;
@@ -147,11 +147,11 @@ impl<'a> BodyView<'a> {
 		self.uncles_rlp().iter().nth(index).map(|rlp| rlp.as_raw().to_vec())
 	}
 
-	pub fn proof_rlp(&self) -> Option<ViewRlp<'a>> {
+	pub fn witness_rlp(&self) -> Option<ViewRlp<'a>> {
 		self.rlp.maybe_at(2)
 	}
 
-	pub fn proof(&self) -> Option<Proof> {
+	pub fn witness(&self) -> Option<Witness> {
 		self.rlp.rlp.val_at(2).ok()
 	}
 }

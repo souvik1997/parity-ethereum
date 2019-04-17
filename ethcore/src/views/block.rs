@@ -22,7 +22,7 @@ use hash::keccak;
 use header::Header;
 use transaction::{UnverifiedTransaction, LocalizedTransaction};
 use views::{TransactionView, HeaderView};
-use state::backend::Proof;
+use state::backend::Witness;
 use super::ViewRlp;
 
 /// View onto block rlp.
@@ -174,11 +174,11 @@ impl<'a> BlockView<'a> {
 		self.uncles_rlp().iter().nth(index).map(|rlp| rlp.as_raw().to_vec())
 	}
 
-	pub fn proof_rlp(&self) -> Option<ViewRlp<'a>> {
+	pub fn witness_rlp(&self) -> Option<ViewRlp<'a>> {
 		self.rlp.maybe_at(3)
 	}
 
-	pub fn proof(&self) -> Option<Proof> {
+	pub fn witness(&self) -> Option<Witness> {
 		self.rlp.rlp.val_at(3).ok()
 	}
 }

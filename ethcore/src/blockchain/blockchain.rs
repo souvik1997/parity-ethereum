@@ -46,7 +46,7 @@ use rayon::prelude::*;
 use receipt::Receipt;
 use rlp_compress::{compress, decompress, blocks_swapper};
 use rlp::RlpStream;
-use state::backend::Proof;
+use state::backend::Witness;
 use transaction::*;
 use types::blockchain_info::BlockChainInfo;
 use types::tree_route::TreeRoute;
@@ -1057,7 +1057,7 @@ impl BlockChain {
 		}
 
 		assert!(self.pending_best_block.read().is_none());
-		assert!(block.view().proof().is_none());
+		assert!(block.view().witness().is_none());
 
 		let compressed_header = compress(block.header_view().rlp().as_raw(), blocks_swapper());
 		let compressed_body = compress(&Self::block_to_body(block.raw()), blocks_swapper());
@@ -1444,9 +1444,9 @@ impl BlockChain {
 		self.best_block.read().header.hash()
 	}
 
-	/// Get best block proof
-	pub fn best_block_proof(&self) -> Option<Proof> {
-		self.best_block.read().block.view().proof()
+	/// Get best block witness
+	pub fn best_block_witness(&self) -> Option<Witness> {
+		self.best_block.read().block.view().witness()
 	}
 
 	/// Get best block number.
@@ -1522,13 +1522,13 @@ impl BlockChain {
 	/// Create a block body from a block.
 	pub fn block_to_body(block: &[u8]) -> Bytes {
 		let block_view = view!(BlockView, block);
-		let proof_rlp = block_view.proof_rlp();
-		let list_length = 2 + match proof_rlp { Some(_) => 1, None => 0 };
+		let witness_rlp = block_view.witness_rlp();
+		let list_length = 2 + match witness_rlp { Some(_) => 1, None => 0 };
 		let mut body = RlpStream::new_list(list_length);
 		body.append_raw(block_view.transactions_rlp().as_raw(), 1);
 		body.append_raw(block_view.uncles_rlp().as_raw(), 1);
-		match proof_rlp {
-			Some(proof_rlp) => { body.append_raw(proof_rlp.as_raw(), 1); }
+		match witness_rlp {
+			Some(witness_rlp) => { body.append_raw(witness_rlp.as_raw(), 1); }
 			None => {}
 		};
 		body.out()
@@ -1651,7 +1651,7 @@ mod tests {
 		let encoded_genesis = genesis.encoded();
 		println!("genesis rlp: {:?}", encoded_genesis);
 		println!("item count: {:?}", encoded_genesis.view().rlp().item_count());
-		encoded_genesis.view().proof();
+		encoded_genesis.view().witness();
 		let first = first.last();
 		let genesis_hash = genesis.hash();
 		let first_hash = first.hash();

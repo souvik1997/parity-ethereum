@@ -35,7 +35,7 @@ use ethcore::header::BlockNumber;
 use ethcore::snapshot::{RestorationStatus, SnapshotService as SS};
 use ethcore::snapshot::service::Service as SnapshotService;
 use ethcore::state_db::StateDB;
-use ethcore::state::backend::ProofCheck;
+use ethcore::state::backend::WitnessCheck;
 use sync::{LightSyncProvider, LightSync, SyncProvider, ManageNetwork};
 use io::{TimerToken, IoContext, IoHandler};
 use light::Cache as LightDataCache;
@@ -141,7 +141,7 @@ impl<BC: ClientBackend> NodeInformantData<BC> {
 }
 
 pub type FullNodeInformantData = NodeInformantData<StateDB>;
-pub type StatelessNodeInformantData = NodeInformantData<ProofCheck>;
+pub type StatelessNodeInformantData = NodeInformantData<WitnessCheck>;
 
 impl<BC: ClientBackend> InformantData for NodeInformantData<BC> {
 	fn executes_transactions(&self) -> bool { true }

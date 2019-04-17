@@ -34,16 +34,20 @@ use keccak_hasher::KeccakHasher;
 use rlp::{self, RlpStream, Rlp, DecoderError};
 
 #[derive(Default, Clone, Debug, PartialEq)]
-pub struct ProofElement {
+pub struct WitnessElement {
 	pub element: DBValue,
 	hash: H256,
 }
 
-impl From<ProofElement> for DBValue {
-	fn from(p: ProofElement) -> DBValue { p.element }
+impl From<WitnessElement> for DBValue {
+	fn from(p: WitnessElement) -> DBValue { p.element }
 }
 
-impl ProofElement {
+impl AsRef<DBValue> for WitnessElement {
+	fn as_ref(&self) -> &DBValue { &self.element }
+}
+
+impl WitnessElement {
 	pub fn new(v: DBValue) -> Self {
 		use hash::keccak;
 		let hash = keccak(&v);
@@ -53,20 +57,24 @@ impl ProofElement {
 }
 
 #[derive(Default, Clone, Debug, PartialEq, RlpEncodableWrapper, RlpDecodableWrapper)]
-pub struct Proof {
-	pub values: Vec<ProofElement>
+pub struct Witness {
+	pub values: Vec<WitnessElement>
 }
 
-impl From<Proof> for Vec<ProofElement> {
-	fn from(p: Proof) -> Vec<ProofElement> { p.values }
+impl AsRef<[WitnessElement]> for Witness {
+	fn as_ref(&self) -> &[WitnessElement] { self.values.as_ref() }
 }
 
-impl From<Proof> for Vec<DBValue> {
-	fn from(p: Proof) -> Vec<DBValue> { p.values.into_iter().map(|v| v.into()).collect() }
+impl From<Witness> for Vec<WitnessElement> {
+	fn from(p: Witness) -> Vec<WitnessElement> { p.values }
 }
 
-impl Proof {
-	pub fn new(values: Vec<ProofElement>) -> Self {
+impl From<Witness> for Vec<DBValue> {
+	fn from(p: Witness) -> Vec<DBValue> { p.values.into_iter().map(|v| v.into()).collect() }
+}
+
+impl Witness {
+	pub fn new(values: Vec<WitnessElement>) -> Self {
 		Self {
 			values: values
 		}
@@ -78,7 +86,7 @@ impl Proof {
 	}
 }
 
-impl ::std::fmt::Display for Proof {
+impl ::std::fmt::Display for Witness {
 	fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
 		use hash::keccak;
 		for v in &self.values {
@@ -88,13 +96,13 @@ impl ::std::fmt::Display for Proof {
 	}
 }
 
-impl rlp::Decodable for ProofElement {
+impl rlp::Decodable for WitnessElement {
 	fn decode(d: &Rlp) -> Result<Self, DecoderError> {
-		Ok(ProofElement::new(DBValue::from_vec(d.as_list()?)))
+		Ok(WitnessElement::new(DBValue::from_vec(d.as_list()?)))
 	}
 }
 
-impl rlp::Encodable for ProofElement {
+impl rlp::Encodable for WitnessElement {
 	fn rlp_append(&self, s: &mut RlpStream) {
 		let raw: &[u8] = &self.element;
 		s.append_list(raw);
@@ -106,7 +114,7 @@ mod test {
 
 	use rlp::encode;
 	use rlp::decode;
-	use state::backend::{Proof, ProofElement};
+	use state::backend::{Witness, WitnessElement};
 	use rlp::Rlp;
 	use kvdb::DBValue;
 
@@ -115,28 +123,28 @@ mod test {
 		pub data: Vec<u8>,
 		pub data2: Vec<u8>,
 		pub data3: String,
-		pub proof: Proof
+		pub witness: Witness
 	}
 
 	#[test]
-	fn serialize_proof_rlp() {
-		let rlp_bytes = encode(&Proof::default());
+	fn serialize_witness_rlp() {
+		let rlp_bytes = encode(&Witness::default());
 		assert!(rlp_bytes.len() > 0);
 		let rlp = Rlp::new(&rlp_bytes);
 		println!("rlp item count: {:?}", rlp.item_count());
 		println!("rlp size: {:?}", rlp.size());
-		let decoded: Proof = rlp.as_val().expect("decode should work");
+		let decoded: Witness = rlp.as_val().expect("decode should work");
 		assert!(decoded.values.len() == 0);
 	}
 
 	#[test]
 	fn fakeblock_serialize_rlp() {
-		let proof_data = DBValue::from_slice(&[34, 45]);
+		let witness_data = DBValue::from_slice(&[34, 45]);
 		let fb = FakeBlock {
 			data: vec![1,2,3,4,5,6,7,8,9,10],
 			data2: vec![1,3,4],
 			data3: "Hello World!".to_owned(),
-			proof: { let mut p = Proof::default(); p.values.push(ProofElement::new(DBValue::from_slice(&proof_data))); p }
+			witness: { let mut p = Witness::default(); p.values.push(WitnessElement::new(DBValue::from_slice(&witness_data))); p }
 		};
 
 		let rlp_bytes = encode(&fb);
@@ -148,9 +156,9 @@ mod test {
 		assert!(decoded.data[0] == 1);
 		assert!(decoded.data[1] == 2);
 		assert!(decoded.data[2] == 3);
-		assert!(decoded.proof.values.len() == 1);
-		assert!(decoded.proof.values[0].element[0] == 34);
-		assert!(decoded.proof.values[0].element[1] == 45);
+		assert!(decoded.witness.values.len() == 1);
+		assert!(decoded.witness.values[0].element[0] == 34);
+		assert!(decoded.witness.values[0].element[1] == 45);
 	}
 }
 
@@ -185,6 +193,178 @@ pub trait Backend: Send + Sync + AsHashDB<KeccakHasher, DBValue> {
 	/// Check whether an account is known to be empty. Returns true if known to be
 	/// empty, false otherwise.
 	fn is_known_null(&self, address: &Address) -> bool;
+}
+
+
+
+#[derive(Clone, PartialEq)]
+pub struct WitnessCheck(MemoryDB<KeccakHasher, DBValue>);
+
+impl WitnessCheck {
+	/// Create a new `WitnessCheck` backend from the given state items.
+	pub fn new(witness: Witness) -> Self {
+		let mut db = MemoryDB::<KeccakHasher, DBValue>::new();
+		for item in witness.values { db.insert(item.as_ref()); }
+		WitnessCheck(db)
+	}
+}
+
+impl HashDB<KeccakHasher, DBValue> for WitnessCheck {
+	fn keys(&self) -> HashMap<H256, i32> { self.0.keys() }
+	fn get(&self, key: &H256) -> Option<DBValue> {
+		self.0.get(key)
+	}
+
+	fn contains(&self, key: &H256) -> bool {
+		self.0.contains(key)
+	}
+
+	fn insert(&mut self, value: &[u8]) -> H256 {
+		self.0.insert(value)
+	}
+
+	fn emplace(&mut self, key: H256, value: DBValue) {
+		self.0.emplace(key, value)
+	}
+
+	fn remove(&mut self, _key: &H256) { }
+}
+
+impl AsHashDB<KeccakHasher, DBValue> for WitnessCheck {
+	fn as_hashdb(&self) -> &HashDB<KeccakHasher, DBValue> { self }
+	fn as_hashdb_mut(&mut self) -> &mut HashDB<KeccakHasher, DBValue> { self }
+}
+
+impl Backend for WitnessCheck {
+	fn add_to_account_cache(&mut self, _addr: Address, _data: Option<Account>, _modified: bool) {}
+	fn cache_code(&self, _hash: H256, _code: Arc<Vec<u8>>) {}
+	fn get_cached_account(&self, _addr: &Address) -> Option<Option<Account>> { None }
+	fn get_cached<F, U>(&self, _a: &Address, _f: F) -> Option<U>
+		where F: FnOnce(Option<&mut Account>) -> U
+	{
+		None
+	}
+	fn get_cached_code(&self, _hash: &H256) -> Option<Arc<Vec<u8>>> { None }
+	fn note_non_null_account(&self, _address: &Address) {}
+	fn is_known_null(&self, _address: &Address) -> bool { false }
+}
+
+pub struct WitnessCreate<H: AsHashDB<KeccakHasher, DBValue>> {
+	base: H, // state we're WitnessCreate values from.
+	changed: MemoryDB<KeccakHasher, DBValue>, // changed state via insertions.
+	witness: Mutex<HashSet<DBValue>>,
+}
+
+impl<AH: AsHashDB<KeccakHasher, DBValue> + Send + Sync> AsHashDB<KeccakHasher, DBValue> for WitnessCreate<AH> {
+	fn as_hashdb(&self) -> &HashDB<KeccakHasher, DBValue> { self }
+	fn as_hashdb_mut(&mut self) -> &mut HashDB<KeccakHasher, DBValue> { self }
+}
+
+impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> HashDB<KeccakHasher, DBValue> for WitnessCreate<H> {
+	fn keys(&self) -> HashMap<H256, i32> {
+		let mut keys = self.base.as_hashdb().keys();
+		keys.extend(self.changed.keys());
+		keys
+	}
+
+	fn get(&self, key: &H256) -> Option<DBValue> {
+		match self.changed.get(key) {
+			Some(val) => {
+				Some(val)
+			}
+			None => {
+				match self.base.as_hashdb().get(key) {
+					Some(val) => {
+						debug_assert!({
+							let hash = hash::keccak(&val);
+							hash == *key
+						});
+						self.witness.lock().insert(val.clone());
+						Some(val)
+					}
+					None => None
+				}
+			}
+		}
+	}
+
+	fn contains(&self, key: &H256) -> bool {
+		self.get(key).is_some()
+	}
+
+	fn insert(&mut self, value: &[u8]) -> H256 {
+		let h = self.changed.insert(value);
+		self.base.as_hashdb_mut().insert(value);
+		h
+	}
+
+	fn emplace(&mut self, key: H256, value: DBValue) {
+		self.changed.emplace(key, value.clone());
+		self.base.as_hashdb_mut().emplace(key, value);
+	}
+
+	fn remove(&mut self, key: &H256) {
+		// only remove from `changed`
+		if self.changed.contains(key) {
+			self.changed.remove(key);
+		}
+		self.base.as_hashdb_mut().remove(key);
+	}
+}
+
+impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> Backend for WitnessCreate<H> {
+
+	fn add_to_account_cache(&mut self, _: Address, _: Option<Account>, _: bool) { }
+
+	fn cache_code(&self, _: H256, _: Arc<Vec<u8>>) { }
+
+	fn get_cached_account(&self, _: &Address) -> Option<Option<Account>> { None }
+
+	fn get_cached<F, U>(&self, _: &Address, _: F) -> Option<U>
+		where F: FnOnce(Option<&mut Account>) -> U
+	{
+		None
+	}
+
+	fn get_cached_code(&self, _: &H256) -> Option<Arc<Vec<u8>>> { None }
+	fn note_non_null_account(&self, _: &Address) { }
+	fn is_known_null(&self, _: &Address) -> bool { false }
+}
+
+impl<H: AsHashDB<KeccakHasher, DBValue>> WitnessCreate<H> {
+	/// Create a new `WitnessCreate` over a base database.
+	/// This will store all values ever fetched from that base.
+	pub fn new(base: H) -> Self {
+		WitnessCreate {
+			base: base,
+			changed: MemoryDB::<KeccakHasher, DBValue>::new(),
+			witness: Mutex::new(HashSet::new()),
+		}
+	}
+
+	/// Consume the backend, extracting the gathered witness in lexicographical order
+	/// by value.
+	pub fn extract_witness(self) -> Witness {
+		Witness::new(self.witness.into_inner().into_iter().map(|v| WitnessElement::new(v)).collect())
+	}
+
+	/// Like extract_witness, but does not consume `self`
+	pub fn copy_witness(&self) -> Witness {
+		Witness::new(self.witness.lock().iter().map(|v| WitnessElement::new(v.clone())).collect())
+	}
+
+	/// Consume backend and return base object
+	pub fn base(self) -> H { self.base }
+}
+
+impl<H: AsHashDB<KeccakHasher, DBValue> + Clone> Clone for WitnessCreate<H> {
+	fn clone(&self) -> Self {
+		WitnessCreate {
+			base: self.base.clone(),
+			changed: self.changed.clone(),
+			witness: Mutex::new(self.witness.lock().clone()),
+		}
+	}
 }
 
 /// A raw backend used to check proofs of execution.
@@ -269,23 +449,12 @@ impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> HashDB<KeccakHasher, DBVa
 	}
 
 	fn get(&self, key: &H256) -> Option<DBValue> {
-		match self.changed.get(key) {
+		match self.base.as_hashdb().get(key) {
 			Some(val) => {
+				self.proof.lock().insert(val.clone());
 				Some(val)
 			}
-			None => {
-				match self.base.as_hashdb().get(key) {
-					Some(val) => {
-						debug_assert!({
-							let hash = hash::keccak(&val);
-							hash == *key
-						});
-						self.proof.lock().insert(val.clone());
-						Some(val)
-					}
-					None => None
-				}
-			}
+			None => self.changed.get(key)
 		}
 	}
 
@@ -294,27 +463,22 @@ impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> HashDB<KeccakHasher, DBVa
 	}
 
 	fn insert(&mut self, value: &[u8]) -> H256 {
-		let h = self.changed.insert(value);
-		self.base.as_hashdb_mut().insert(value);
-		h
+		self.changed.insert(value)
 	}
 
 	fn emplace(&mut self, key: H256, value: DBValue) {
-		self.changed.emplace(key, value.clone());
-		self.base.as_hashdb_mut().emplace(key, value);
+		self.changed.emplace(key, value)
 	}
 
 	fn remove(&mut self, key: &H256) {
 		// only remove from `changed`
 		if self.changed.contains(key) {
-			self.changed.remove(key);
+			self.changed.remove(key)
 		}
-		self.base.as_hashdb_mut().remove(key);
 	}
 }
 
 impl<H: AsHashDB<KeccakHasher, DBValue> + Send + Sync> Backend for Proving<H> {
-
 	fn add_to_account_cache(&mut self, _: Address, _: Option<Account>, _: bool) { }
 
 	fn cache_code(&self, _: H256, _: Arc<Vec<u8>>) { }
@@ -345,17 +509,9 @@ impl<H: AsHashDB<KeccakHasher, DBValue>> Proving<H> {
 
 	/// Consume the backend, extracting the gathered proof in lexicographical order
 	/// by value.
-	pub fn extract_proof(self) -> Proof {
-		Proof::new(self.proof.into_inner().into_iter().map(|v| ProofElement::new(v)).collect())
+	pub fn extract_proof(self) -> Vec<DBValue> {
+		self.proof.into_inner().into_iter().collect()
 	}
-
-	/// Like extract_proof, but does not consume `self`
-	pub fn copy_proof(&self) -> Proof {
-		Proof::new(self.proof.lock().iter().map(|v| ProofElement::new(v.clone())).collect())
-	}
-
-	/// Consume backend and return base object
-	pub fn base(self) -> H { self.base }
 }
 
 impl<H: AsHashDB<KeccakHasher, DBValue> + Clone> Clone for Proving<H> {

@@ -33,7 +33,7 @@ use transaction::{
 use parking_lot::RwLock;
 
 use account_provider::AccountProvider;
-use client::{TransactionId, BlockInfo, CallContract, Nonce, ProvingCallContract};
+use client::{TransactionId, BlockInfo, CallContract, Nonce};
 use engines::EthEngine;
 use header::Header;
 use miner;
@@ -91,7 +91,7 @@ impl<'a, C: 'a, B: Backend + Clone> Clone for PoolClient<'a, C, B> {
 }
 
 impl<'a, C: 'a, B: Backend + Clone + 'static> PoolClient<'a, C, B> where
-C: BlockInfo + CallContract + ProvingCallContract,
+C: BlockInfo + CallContract
 {
 	/// Creates new client given chain, nonce cache, accounts and service transaction verifier.
 	pub fn new(

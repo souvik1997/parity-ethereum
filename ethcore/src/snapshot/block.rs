@@ -127,7 +127,7 @@ impl AbridgedBlock {
 			header: header,
 			transactions: transactions,
 			uncles: uncles,
-			proof: None
+			witness: None
 		})
 	}
 }

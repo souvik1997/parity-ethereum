@@ -79,7 +79,7 @@ pub mod blocks {
 	use heapsize::HeapSizeOf;
 	use ethereum_types::{H256, U256};
 	use bytes::Bytes;
-	use state::backend::Proof;
+	use state::backend::Witness;
 
 	/// A mode for verifying blocks.
 	pub struct Blocks;
@@ -124,8 +124,8 @@ pub mod blocks {
 		pub transactions: Vec<UnverifiedTransaction>,
 		/// Unverified block uncles.
 		pub uncles: Vec<Header>,
-		/// Proof
-		pub proof: Option<Proof>,
+		/// Witness
+		pub witness: Option<Witness>,
 		/// Raw block bytes.
 		pub bytes: Bytes,
 	}
@@ -134,20 +134,20 @@ pub mod blocks {
 		/// Create an `Unverified` from raw bytes.
 		pub fn from_rlp(bytes: Bytes) -> Result<Self, ::rlp::DecoderError> {
 			use rlp::Rlp;
-			let (header, transactions, uncles, proof) = {
+			let (header, transactions, uncles, witness) = {
 				let rlp = Rlp::new(&bytes);
 				let header = rlp.val_at(0)?;
 				let transactions = rlp.list_at(1)?;
 				let uncles = rlp.list_at(2)?;
-				let proof = rlp.val_at(3).ok();
-				(header, transactions, uncles, proof)
+				let witness = rlp.val_at(3).ok();
+				(header, transactions, uncles, witness)
 			};
 
 			Ok(Unverified {
 				header,
 				transactions,
 				uncles,
-				proof,
+				witness,
 				bytes,
 			})
 		}

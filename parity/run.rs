@@ -29,7 +29,7 @@ use ethcore::snapshot::{self, SnapshotConfiguration};
 use ethcore::spec::{SpecParams, OptimizeFor, Spec};
 use ethcore::verification::queue::VerifierSettings;
 use ethcore::state_db::StateDB;
-use ethcore::state::backend::ProofCheck;
+use ethcore::state::backend::WitnessCheck;
 use ethcore_logger::{Config as LogConfig, RotatingLogger};
 use ethcore_service::ClientService;
 use ethereum_types::Address;
@@ -148,7 +148,7 @@ struct NodeInfo<BC: ClientBackend> {
 }
 
 type FullNodeInfo = NodeInfo<StateDB>;
-type StatelessNodeInfo = NodeInfo<ProofCheck>;
+type StatelessNodeInfo = NodeInfo<WitnessCheck>;
 
 impl<BC: ClientBackend> ::local_store::NodeInfo for NodeInfo<BC> {
 	fn pending_transactions(&self) -> Vec<::transaction::PendingTransaction> {
@@ -369,7 +369,7 @@ fn execute_stateless_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_c
 		Rr: Fn() + 'static + Send
 {
 	// load spec
-	let spec: Spec<ProofCheck> = cmd.spec.spec(&cmd.dirs.cache)?;
+	let spec: Spec<WitnessCheck> = cmd.spec.spec(&cmd.dirs.cache)?;
 
 	// load genesis hash
 	let genesis_hash = spec.genesis_header().hash();
@@ -562,7 +562,7 @@ fn execute_stateless_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_c
 		.map_err(|e| format!("Failed to open database {:?}", e))?;
 
 	// create client service.
-	let service: ClientService<ProofCheck> = ClientService::start(
+	let service: ClientService<WitnessCheck> = ClientService::start(
 		client_config,
 		&spec,
 		client_db,
@@ -587,7 +587,7 @@ fn execute_stateless_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_c
 	// take handle to private transactions service
 	let private_tx_service = service.private_tx_service();
 	let private_tx_provider = private_tx_service.provider();
-	let connection_filter = connection_filter_address.map(|a| Arc::new(NodeFilter::new(Arc::downgrade(&client) as Weak<BlockChainClient<StateBackend = ProofCheck>>, a)));
+	let connection_filter = connection_filter_address.map(|a| Arc::new(NodeFilter::new(Arc::downgrade(&client) as Weak<BlockChainClient<StateBackend = WitnessCheck>>, a)));
 	let snapshot_service = service.snapshot_service();
 
 	// initialize the local node information store.
@@ -690,7 +690,7 @@ fn execute_stateless_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_c
 	}
 
 	let contract_client = {
-		struct StatelessRegistrar { client: Arc<CoreClient<ProofCheck>> }
+		struct StatelessRegistrar { client: Arc<CoreClient<WitnessCheck>> }
 		impl RegistrarClient for StatelessRegistrar {
 			type Call = Asynchronous;
 			fn registrar_address(&self) -> Result<Address, String> {
@@ -708,7 +708,7 @@ fn execute_stateless_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_c
 	// the updater service
 	let updater_fetch = fetch.clone();
 	let updater = Updater::new(
-		&Arc::downgrade(&(service.client() as Arc<BlockChainClient<StateBackend = ProofCheck>>)),
+		&Arc::downgrade(&(service.client() as Arc<BlockChainClient<StateBackend = WitnessCheck>>)),
 		&Arc::downgrade(&sync_provider),
 		update_policy,
 		hash_fetch::Client::with_fetch(contract_client.clone(), updater_fetch, runtime.executor())
@@ -1324,10 +1324,10 @@ enum RunningClientInner {
 		keep_alive: Box<Any>,
 	},
 	Stateless {
-		rpc: jsonrpc_core::MetaIoHandler<Metadata, informant::Middleware<informant::ClientNotifier<ProofCheck>>>,
-		informant: Arc<Informant<StatelessNodeInformantData, ProofCheck>>,
-		client: Arc<CoreClient<ProofCheck>>,
-		client_service: Arc<ClientService<ProofCheck>>,
+		rpc: jsonrpc_core::MetaIoHandler<Metadata, informant::Middleware<informant::ClientNotifier<WitnessCheck>>>,
+		informant: Arc<Informant<StatelessNodeInformantData, WitnessCheck>>,
+		client: Arc<CoreClient<WitnessCheck>>,
+		client_service: Arc<ClientService<WitnessCheck>>,
 		keep_alive: Box<Any>,
 	},
 }

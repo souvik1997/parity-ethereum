@@ -29,7 +29,7 @@ use hash::keccak;
 use header::{BlockNumber, Header as FullHeader};
 use heapsize::HeapSizeOf;
 use rlp::{self, Rlp, RlpStream};
-use state::backend::Proof;
+use state::backend::Witness;
 use transaction::UnverifiedTransaction;
 use views::{self, BlockView, HeaderView, BodyView};
 
@@ -176,9 +176,9 @@ impl Body {
 	/// Hash of each uncle.
 	pub fn uncle_hashes(&self) -> Vec<H256> { self.view().uncle_hashes() }
 
-	pub fn proof_rlp(&self) -> Option<Rlp> { self.view().proof_rlp().map(|r| r.rlp) }
+	pub fn witness_rlp(&self) -> Option<Rlp> { self.view().witness_rlp().map(|r| r.rlp) }
 
-	pub fn proof(&self) -> Option<Proof> { self.view().proof() }
+	pub fn witness(&self) -> Option<Witness> { self.view().witness() }
 }
 
 /// Owning block view.
@@ -195,14 +195,14 @@ impl Block {
 
 	/// Create a new owning block view by concatenating the encoded header and body
 	pub fn new_from_header_and_body(header: &views::HeaderView, body: &views::BodyView) -> Self {
-		let proof_rlp = body.proof_rlp();
-		let list_length = 3 + match proof_rlp { Some(_) => 1, None => 0 };
+		let witness_rlp = body.witness_rlp();
+		let list_length = 3 + match witness_rlp { Some(_) => 1, None => 0 };
 		let mut stream = RlpStream::new_list(list_length);
 		stream.append_raw(header.rlp().as_raw(), 1);
 		stream.append_raw(body.transactions_rlp().as_raw(), 1);
 		stream.append_raw(body.uncles_rlp().as_raw(), 1);
-		match proof_rlp {
-			Some(proof_rlp) => { stream.append_raw(proof_rlp.as_raw(), 1); }
+		match witness_rlp {
+			Some(witness_rlp) => { stream.append_raw(witness_rlp.as_raw(), 1); }
 			None => {}
 		};
 		Block::new(stream.out())

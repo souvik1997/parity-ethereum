@@ -31,7 +31,7 @@ use ethcore::error::{ImportErrorKind, ErrorKind as EthcoreErrorKind, Error as Et
 use ethcore::miner::Miner;
 use ethcore::verification::queue::VerifierSettings;
 use ethcore::verification::queue::kind::blocks::Unverified;
-use ethcore::state::backend::ProofCheck;
+use ethcore::state::backend::WitnessCheck;
 use ethcore::state_db::StateDB;
 use ethcore::spec::Spec;
 use ethcore_service::ClientService;
@@ -153,7 +153,7 @@ pub fn execute(cmd: BlockchainCmd) -> Result<(), String> {
 				execute_import_light(import_cmd)
 			} else if import_cmd.stateless {
 				println!("Stateless");
-				execute_import::<ProofCheck>(import_cmd)
+				execute_import::<WitnessCheck>(import_cmd)
 			} else {
 				execute_import::<StateDB>(import_cmd)
 			}

@@ -234,9 +234,9 @@ pub fn prove_transaction_virtual<H: AsHashDB<KeccakHasher, DBValue> + Send + Syn
 	env_info: &EnvInfo,
 	factories: Factories,
 ) -> Option<(Bytes, Vec<DBValue>)> {
-	use self::backend::Proving;
+	use self::backend::WitnessCreate;
 
-	let backend = Proving::new(db);
+	let backend = self::backend::Proving::new(db);
 	let res = State::from_existing(
 		backend,
 		root,

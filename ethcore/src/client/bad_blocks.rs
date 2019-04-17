@@ -43,7 +43,7 @@ impl BadBlocks {
 			Ok(unverified) => {
 				error!(
 					target: "client",
-					"\nBad block detected: {}\nRLP: {}\nHeader: {:?}\nUncles: {}\nTransactions:{}\nProof:{}, {}\n\n",
+					"\nBad block detected: {}\nRLP: {}\nHeader: {:?}\nUncles: {}\nTransactions:{}\nWitness:{}, {}\n\n",
 					message,
 					unverified.bytes.to_hex(),
 					unverified.header,
@@ -57,13 +57,13 @@ impl BadBlocks {
 						.enumerate()
 						.map(|(index, tx)| format!("[Tx {}] {:?}", index, tx))
 						.join("\n"),
-					match unverified.proof {
+					match unverified.witness {
 						None => "(none)".into(),
-						Some(ref proof) => format!("{} values", proof.values.len())
+						Some(ref witness) => format!("{} values", witness.values.len())
 					},
-					match unverified.proof {
+					match unverified.witness {
 						None => "(none)".into(),
-						Some(ref proof) => format!("{}", proof)
+						Some(ref witness) => format!("{}", witness)
 					},
 				);
 				self.last_blocks.write().insert(unverified.header.hash(), (unverified, message));

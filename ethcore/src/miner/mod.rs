@@ -40,7 +40,7 @@ use block::{Block, SealedBlock};
 use client::{
 	CallContract, RegistryInfo, ScheduleInfo,
 	BlockChain, BlockProducer, SealedBlockImporter, ChainInfo,
-	AccountData, Nonce, ProvingCallContract, ReopenBlock, PrepareOpenBlock, BroadcastProposalBlock, ImportSealedBlock
+	AccountData, Nonce, ReopenBlock, PrepareOpenBlock, BroadcastProposalBlock, ImportSealedBlock
 };
 use error::Error;
 use header::{BlockNumber, Header};
@@ -56,8 +56,6 @@ pub trait TransactionVerifierClient: Send + Sync
 	+ CallContract + RegistryInfo
 	// Required for verifiying transactions
 	+ BlockChain + ScheduleInfo + AccountData
-	// Required for generating proofs
-	+ ProvingCallContract
 {}
 
 /// Extended client interface used for mining
@@ -81,10 +79,10 @@ pub trait MinerService : Send + Sync {
 	/// Get the sealing work package preparing it if doesn't exist yet.
 	///
 	/// Returns `None` if engine seals internally.
-	fn work_package<C>(&self, chain: &C) -> Option<(H256, BlockNumber, u64, U256)> where C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync + ReopenBlock<ReopenBlockStateBackend = Self::StateBackend> + PrepareOpenBlock<PrepareOpenBlockStateBackend = Self::StateBackend> + ImportSealedBlock<ImportSealedBlockStateBackend = Self::StateBackend>;
+	fn work_package<C>(&self, chain: &C) -> Option<(H256, BlockNumber, u64, U256)> where C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + Sync + ReopenBlock<ReopenBlockStateBackend = Self::StateBackend> + PrepareOpenBlock<PrepareOpenBlockStateBackend = Self::StateBackend> + ImportSealedBlock<ImportSealedBlockStateBackend = Self::StateBackend>;
 
 	/// Update current pending block
-	fn update_sealing<C>(&self, chain: &C) where C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + ProvingCallContract + Sync + ReopenBlock<ReopenBlockStateBackend = Self::StateBackend> + PrepareOpenBlock<PrepareOpenBlockStateBackend = Self::StateBackend> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = Self::StateBackend> + ImportSealedBlock<ImportSealedBlockStateBackend = Self::StateBackend>;
+	fn update_sealing<C>(&self, chain: &C) where C: BlockChain + CallContract + BlockProducer + SealedBlockImporter + Nonce + Sync + ReopenBlock<ReopenBlockStateBackend = Self::StateBackend> + PrepareOpenBlock<PrepareOpenBlockStateBackend = Self::StateBackend> + BroadcastProposalBlock<BroadcastProposalBlockStateBackend = Self::StateBackend> + ImportSealedBlock<ImportSealedBlockStateBackend = Self::StateBackend>;
 
 	// Notifications
 
