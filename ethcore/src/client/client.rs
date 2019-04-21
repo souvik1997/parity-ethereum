@@ -1038,6 +1038,27 @@ impl<BC: ClientBackend> CoreClient<BC> {
 							};
 							import_results.push(route);
 
+							if header.number() % 1000 == 0 {
+								fn retry_size() -> Option<u64> {
+									let cwd = ::std::env::current_dir().unwrap();
+									trace!(target: "stats", "INFO cwd = {:?}", cwd);
+									const MAX_RETRIES: usize = 100;
+									let mut retries = 0;
+									loop {
+										match fs_extra::dir::get_size(&cwd).ok() {
+											Some(s) => { return Some(s) }
+											None => {}
+										};
+										retries += 1;
+										if retries > MAX_RETRIES {
+											panic!("Could not get directory size");
+										}
+									}
+								}
+								use fs_extra;
+								trace!(target: "stateless", "directory size: {}: {}", header.number(), retry_size().unwrap());
+							}
+
 							self.report.write().accrue_block(&header, transactions_len);
 						}
 					},
@@ -1550,10 +1571,12 @@ impl<BC: ClientBackend> CallContract for CoreClient<BC> {
 
 impl<BC: ClientBackend> ImportBlock for CoreClient<BC> {
 	fn import_block(&self, unverified: Unverified) -> EthcoreResult<H256> {
+		/*
 		debug!(target: "client", "Importing block #{} with {}", unverified.header.clone().number(), match &unverified.witness {
 			Some(witness) => format!("witness ({} entries)", witness.values.len()),
 			None => "no witness".into(),
 		});
+		*/
 		if self.chain.read().is_known(&unverified.hash()) {
 			bail!(EthcoreErrorKind::Import(ImportErrorKind::AlreadyInChain));
 		}

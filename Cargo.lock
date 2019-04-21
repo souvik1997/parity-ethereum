@@ -635,6 +635,7 @@ dependencies = [
  "ethstore 0.2.0",
  "evm 0.1.0",
  "fake-hardware-wallet 0.0.1",
+ "fs_extra 1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "hardware-wallet 1.12.0",
  "hashdb 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "heapsize 0.4.2 (git+https://github.com/cheme/heapsize.git?branch=ec-macfix)",

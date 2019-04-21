@@ -32,6 +32,7 @@ memory-cache = { path = "../util/memory_cache" }
 ethabi = "6.0"
 ethabi-derive = "6.0"
 ethabi-contract = "6.0"
+fs_extra = "1.1.0"
 ethjson = { path = "../json" }
 ethkey = { path = "../ethkey" }
 ethstore = { path = "../ethstore" }

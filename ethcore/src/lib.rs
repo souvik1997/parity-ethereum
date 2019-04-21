@@ -113,6 +113,8 @@ extern crate journaldb;
 #[cfg(any(test, feature = "json-tests", feature = "test-helpers"))]
 extern crate tempdir;
 
+extern crate fs_extra;
+
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android"))]
 extern crate hardware_wallet;
 
