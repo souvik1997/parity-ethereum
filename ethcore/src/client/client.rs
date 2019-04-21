@@ -1033,13 +1033,9 @@ impl<BC: ClientBackend> CoreClient<BC> {
 								if contains_witness {
 									self.commit_block(closed_block, &header, encoded::Block::new(bytes))
 								} else {
-									use hash::keccak;
 									debug!(target: "client", "Pre-verified block {} did not have witness data. Using generated witness", hash);
 									let sealed_block = closed_block.clone().try_seal(&*self.engine, block_seal).expect("provided seal should be valid");
-									let witness = sealed_block.block.witness();
-									let sealed_block_rlp = sealed_block.rlp_bytes();
-									trace!(target: "stateless", "Block #{} with witness: hash: {}, numvalues: {}, bytes: {}, block_bytes: {}, valuehashes: {:?}", closed_block.header().number(), witness.hash(), witness.values.len(), rlp::encode(&witness).len(), sealed_block_rlp.len(), witness.values.iter().map(|v| (v.hash(), v.element.len())).collect::<Vec<_>>());
-									self.commit_block(closed_block, &header, encoded::Block::new(sealed_block_rlp))
+									self.commit_block(closed_block, &header, encoded::Block::new(sealed_block.rlp_bytes()))
 								}
 							};
 							import_results.push(route);

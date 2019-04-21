@@ -82,7 +82,7 @@ impl Witness {
 
 	pub fn hash(&self) -> H256 {
 		use hash::keccak;
-		self.values.iter().map(|v| v.hash()).fold(H256::from(0), |a, b| a ^ b)
+		self.values.iter().map(|v| keccak(&v.element)).fold(H256::from(0), |a, b| a ^ b)
 	}
 }
 

@@ -68,18 +68,17 @@ pub struct Block {
 impl Block {
 	/// Get the RLP-encoding of the block with the seal.
 	pub fn rlp_bytes(&self) -> Bytes {
-		let list_length = 3 + match self.witness { Some(_) => 0, None => 0};
+		let list_length = 3 + match self.witness { Some(_) => 1, None => 0};
 		let mut block_rlp = RlpStream::new_list(list_length);
 		block_rlp.append(&self.header);
 		block_rlp.append_list(&self.transactions);
 		block_rlp.append_list(&self.uncles);
-		/*
 		match self.witness {
 			Some(ref witness) => {
 				block_rlp.append(witness);
 			}
 			None => {}
-		};*/
+		};
 		block_rlp.out()
 	}
 }
@@ -270,7 +269,7 @@ pub struct LockedBlock<B: Backend + Clone> {
 ///
 /// The block's header has valid seal arguments. The block cannot be reversed into a `ClosedBlock` or `OpenBlock`.
 pub struct SealedBlock<B: Backend + Clone> {
-	pub block: ExecutedBlock<B>,
+	block: ExecutedBlock<B>,
 }
 
 impl<'x, B: Backend + Clone + 'static> OpenBlock<'x, B> {
@@ -561,11 +560,11 @@ impl<B: Backend + Clone> Drain<B> for LockedBlock<B> {
 impl<'a, B: Backend + Clone + 'a> SealedBlock<B> {
 	/// Get the RLP-encoding of the block.
 	pub fn rlp_bytes(&self) -> Bytes {
-		let mut block_rlp = RlpStream::new_list(3);
+		let mut block_rlp = RlpStream::new_list(4);
 		block_rlp.append(&self.block.header);
 		block_rlp.append_list(&self.block.transactions);
 		block_rlp.append_list(&self.block.uncles);
-		// block_rlp.append(&self.block.witness());
+		block_rlp.append(&self.block.witness());
 		block_rlp.out()
 	}
 }
